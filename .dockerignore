@@ -1,0 +1,21 @@
+# Don't copy these into the Docker image
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+.windsurf/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+*.md
+*.docx
+docs/
+scripts/
+models/Qwen2.5-1.5B-Instruct/
+models/large-v3-turbo.pt
+models/*.gguf
+backend/.env
+.env
+.env.example

@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.windsurf/
+
+
+# Model weights (large — download separately)
+models/*.pt
+models/*.jit
+models/*.gguf
+models/**/*.pt
+models/**/*.jit
+models/**/*.safetensors
+models/**/*.bin
+models/**/*.gguf
+models/**/tokenizer.json
+
+# Data (generated at runtime)
+data/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Environment (API keys — never commit!)
+.env
+backend/.env
+
+# OS
+.DS_Store
+Thumbs.db
+~$*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# HuggingFace cache
+.cache/
+
+# Voice reference files (user audio)
+models/voice_reference/
+
+# Logs
+*.log
