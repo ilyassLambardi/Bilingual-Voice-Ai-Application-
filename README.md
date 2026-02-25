@@ -19,8 +19,8 @@ The frontend provides a 3D fluid orb visualization built with Three.js/WebGL sha
 ### Demo
 
 ```
-You (English):  "Hey Alex, what does Fernweh mean?"
-Alex (English): "Fernweh is this beautiful German word — it means a longing for
+You (English):  "Hey, what does Fernweh mean?"
+Alex (English): "Fernweh it is a German word — it means a longing for
                  faraway places, almost like reverse homesickness..."
                  • "Ich hab so Fernweh, ich muss einfach wieder reisen."
                  • "Das Fernweh packt mich jedes Mal im Winter."
