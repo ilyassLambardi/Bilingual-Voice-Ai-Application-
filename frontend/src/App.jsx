@@ -23,6 +23,10 @@ import ResponseLatency from "./components/ResponseLatency";
 import MessageCounter from "./components/MessageCounter";
 import ParticleBurst from "./components/ParticleBurst";
 import EnergyMeter from "./components/EnergyMeter";
+import ModelLoadingScreen from "./components/ModelLoadingScreen";
+import VoiceRipples from "./components/VoiceRipples";
+import ConversationInsights from "./components/ConversationInsights";
+import SmartSuggestions from "./components/SmartSuggestions";
 import useWebSocket from "./hooks/useWebSocket";
 import useAudioStream from "./hooks/useAudioStream";
 
@@ -396,6 +400,8 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
   const [backchannelPulse, setBackchannelPulse] = useState(0);
+  const [modelsReady, setModelsReady] = useState(false);
+  const [insightsOpen, setInsightsOpen] = useState(false);
   const audioStreamRef = useRef(null);
   const prevConnected = useRef(null);
 
@@ -557,6 +563,13 @@ export default function App() {
         {!introComplete && <WelcomeIntro onDone={() => setIntroComplete(true)} />}
       </AnimatePresence>
 
+      {/* ═══ MODEL LOADING SCREEN ═══ */}
+      <AnimatePresence>
+        {introComplete && !modelsReady && (
+          <ModelLoadingScreen connected={connected} onReady={() => setModelsReady(true)} />
+        )}
+      </AnimatePresence>
+
       {/* ═══ AURORA BACKGROUND (language-aware) ═══ */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden" style={{ zIndex: 0 }}>
         <motion.div className="absolute rounded-full"
@@ -662,6 +675,15 @@ export default function App() {
             onToggle={() => setStatsOpen(p => !p)}
           />
 
+          {/* Conversation Insights */}
+          <ConversationInsights
+            messages={messages}
+            pipelineState={pipelineState}
+            open={insightsOpen}
+            onToggle={() => setInsightsOpen(p => !p)}
+            theme={theme}
+          />
+
           {/* Message count + Export */}
           <MessageCounter count={messages.length} theme={theme} />
           <ExportChat messages={messages} theme={theme} />
@@ -703,6 +725,7 @@ export default function App() {
         <div className="relative">
           <GlowRing state={pipelineState} />
           <FluidOrb state={pipelineState} lang={detectedLang || "en"} />
+          <VoiceRipples state={pipelineState} lang={detectedLang || "en"} micActive={audioStream.micActive} />
           <ParticleBurst pipelineState={pipelineState} />
           {/* Backchannel pulse — quick ring flash when user says "mhm" */}
           <AnimatePresence>
@@ -764,6 +787,20 @@ export default function App() {
         initial={{ opacity: 0 }} animate={{ opacity: show ? 1 : 0 }} transition={{ delay: 0.5 }}>
         <TranscriptWindow messages={messages} ghostText={ghostText} isListening={pipelineState === "listening"} theme={theme} />
       </motion.div>
+
+      {/* ═══ SMART SUGGESTIONS ═══ */}
+      {show && modelsReady && (
+        <motion.div className="relative w-full max-w-lg px-5 shrink-0" style={{ zIndex: 10 }}
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6 }}>
+          <SmartSuggestions
+            messages={messages}
+            pipelineState={pipelineState}
+            detectedLang={detectedLang}
+            onSend={handleSendChat}
+            theme={theme}
+          />
+        </motion.div>
+      )}
 
       {/* ═══ CONTROLS + CHAT ═══ */}
       <motion.div className="relative shrink-0 pt-3 pb-5 flex flex-col items-center gap-3" style={{ zIndex: 10 }}
