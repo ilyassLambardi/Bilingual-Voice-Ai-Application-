@@ -116,6 +116,10 @@ class VADProcessor:
         self._speech_timeout_samples = sample_rate * 8  # 8s max continuous speech
         self._continuous_speech_samples = 0
 
+        # ── Hangover smoothing (prevents flickering at speech boundaries) ──
+        self._hangover_frames = 0           # frames remaining in hangover
+        self._hangover_max = 4              # ~128ms hangover after VAD drops
+
         # ── SNR validation ────────────────────────────────────────────
         self._min_snr_db = 3.0              # minimum SNR to accept an utterance
 
@@ -230,11 +234,17 @@ class VADProcessor:
                                   utterance once silence is confirmed,
                                   else None.  Audio is noise-suppressed.
         """
+        # ── Input validation ──────────────────────────────────────
+        if len(chunk) == 0:
+            return False, None
+
         # Ensure float32 in [-1, 1]
         if chunk.dtype == np.int16:
             chunk_f = chunk.astype(np.float32) / 32768.0
         else:
             chunk_f = chunk.astype(np.float32)
+            # Clamp to valid range (prevents distortion from bad input)
+            chunk_f = np.clip(chunk_f, -1.0, 1.0)
 
         rms = float(np.sqrt(np.mean(chunk_f ** 2)))
 
@@ -262,7 +272,7 @@ class VADProcessor:
             if self._speech_samples > 0:
                 self._speech_samples = 0
                 self._buffer.clear()
-                self.model.reset_states()
+                self._hangover_frames = 0
             return False, None
 
         # ── Above gate — run VAD model ────────────────────────────────
@@ -275,8 +285,12 @@ class VADProcessor:
         prob = self.model(tensor, self.sample_rate).item()
         dyn_threshold = self._get_dynamic_threshold()
 
-        if prob >= dyn_threshold:
-            # ── Speech detected ──────────────────────────────────────
+        if prob >= dyn_threshold or (self._in_speech and self._hangover_frames > 0):
+            # ── Speech detected (or hangover active) ─────────────────
+            if prob >= dyn_threshold:
+                self._hangover_frames = self._hangover_max  # refresh hangover
+            else:
+                self._hangover_frames -= 1  # consuming hangover
             self._silence_samples = 0
             self._buffer.append(chunk_f)
             self._speech_samples += len(chunk_f)
@@ -328,10 +342,12 @@ class VADProcessor:
 
                 return True, None  # still waiting for more silence
 
-            # Not in speech — discard and reset model state
+            # Not in speech — discard pre-speech accumulation
             self._speech_samples = 0
             self._buffer.clear()
-            self.model.reset_states()
+            self._hangover_frames = 0
+            # NOTE: Do NOT reset_states() here — preserves LSTM context
+            # for better onset detection. Only reset on explicit reset().
             return False, None
 
     def reset(self):
@@ -340,8 +356,9 @@ class VADProcessor:
         self._speech_samples = 0
         self._silence_samples = 0
         self._continuous_speech_samples = 0
+        self._hangover_frames = 0
         self._buffer.clear()
-        self.model.reset_states()
+        self.model.reset_states()  # only place LSTM states are reset
         # Restore base threshold (dynamic adjustment recomputes per-chunk)
         self.threshold = self._base_threshold
 

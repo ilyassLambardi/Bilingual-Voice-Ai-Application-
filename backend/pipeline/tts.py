@@ -59,14 +59,19 @@ _DE_MARKERS = {
 
 
 def _detect_sentence_lang(text: str) -> str:
-    """Detect if a sentence is German or English using keyword + character heuristic."""
+    """Detect if a sentence is German or English.
+
+    English is the strong default.  Only returns 'de' when the text
+    is clearly German (special chars + keyword, or >= 40% keywords).
+    """
     lower = text.lower()
-    # German-specific characters are a strong signal
-    if any(ch in lower for ch in "\u00e4\u00f6\u00fc\u00df"):  # ä ö ü ß
-        return "de"
     words = set(lower.split())
     de_count = len(words & _DE_MARKERS)
-    if len(words) > 0 and de_count / len(words) > 0.15:
+    # German chars are strong signal, but require at least 1 keyword
+    if any(ch in lower for ch in "\u00e4\u00f6\u00fc\u00df") and de_count >= 1:
+        return "de"
+    # Pure keyword ratio — must be clearly German
+    if len(words) >= 2 and de_count / len(words) >= 0.4:
         return "de"
     return "en"
 

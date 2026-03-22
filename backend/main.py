@@ -29,7 +29,6 @@ Server → Client:
     binary   Raw Int16 PCM audio at the sample_rate from audio_config.
 """
 
-import json
 import asyncio
 import logging
 import uuid

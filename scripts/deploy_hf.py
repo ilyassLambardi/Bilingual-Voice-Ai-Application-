@@ -87,7 +87,7 @@ def main():
         repo_id=REPO_ID,
         repo_type=REPO_TYPE,
         folder_path=str(stage),
-        commit_message="Deploy: 4-module architecture, ASR fixes, interrupt behavior, full pipeline",
+        commit_message="Deploy: Full pipeline audit fixes — VAD hangover, pipeline timeout, config validation, English-first",
         delete_patterns=["*"],  # remove old files not in this upload
     )
 

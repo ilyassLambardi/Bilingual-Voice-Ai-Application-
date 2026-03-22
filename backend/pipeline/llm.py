@@ -75,8 +75,8 @@ class LLMProcessor:
                     loop.call_soon_threadsafe(queue.put_nowait, token)
             self._history.append({"role": "user", "content": user_text})
             self._history.append({"role": "assistant", "content": full})
-            if len(self._history) > 8:
-                self._history = self._history[-8:]
+            if len(self._history) > 20:
+                self._history = self._history[-20:]
 
         def _generate_wrapper():
             try:
@@ -93,12 +93,16 @@ class LLMProcessor:
             yield token
 
     def _build_messages(self, user_text: str, lang: str = "en") -> list[dict]:
-        context_hint = (
-            f"[ASR detected: {lang} — IGNORE this tag. Analyze the user's actual intent.]\n"
-            "Apply MIRRORING: match the user's language. If they mix languages, "
-            "respond in the dominant one. If they ask about a word's meaning, "
-            "activate TEACHER MODE.\n"
-        )
+        if lang == "de":
+            context_hint = (
+                "[The user is speaking GERMAN. Respond fully in German. "
+                "Use natural German speech patterns and fillers.]\n"
+            )
+        else:
+            context_hint = (
+                "[The user is speaking ENGLISH. Respond in English. "
+                "Do NOT use any German unless the user explicitly asks about German words.]\n"
+            )
 
         # Detect teacher mode intent
         lower = user_text.lower()
@@ -300,14 +304,16 @@ class FallbackLLM:
             self._history = self._history[-24:]
 
     def _build_messages(self, user_text: str, lang: str = "en") -> list[dict]:
-        lang_rule = (
-            f"ASR detected language hint: {lang}. BUT this may be wrong if the user "
-            "mentioned a foreign word inside a sentence in another language.\n"
-            "CRITICAL: Respond in the language the user is ACTUALLY speaking in. "
-            "If they ask in English about a German word, answer in English. "
-            "If they speak a full German sentence, reply in German. "
-            "Judge by the overall sentence, not individual words."
-        )
+        if lang == "de":
+            lang_rule = (
+                "[The user is speaking GERMAN. Respond fully in German. "
+                "Use natural German speech patterns and fillers.]"
+            )
+        else:
+            lang_rule = (
+                "[The user is speaking ENGLISH. Respond in English. "
+                "Do NOT use any German unless the user explicitly asks about German words.]"
+            )
 
         sys_msg = f"{self.system_prompt}\n{lang_rule}"
         messages = [{"role": "system", "content": sys_msg}]

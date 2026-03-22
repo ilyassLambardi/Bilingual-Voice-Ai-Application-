@@ -90,8 +90,8 @@ class AudioBuffer:
         if not self.fragments:
             return None
         combined = np.concatenate(self.fragments)
-        n = len(self.fragments)
         self.fragments.clear()
+        self.cancel_timer()  # prevent stale timer callbacks
         return combined
 
     def clear(self):
@@ -210,4 +210,5 @@ class SessionState:
         self.interrupt.clear()
         self.audio_buffer.cancel_timer()
         self.audio_buffer.clear()
+        self.language.clear()
         self.ghost_counter = 0

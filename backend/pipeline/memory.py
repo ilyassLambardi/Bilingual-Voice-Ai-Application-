@@ -54,6 +54,8 @@ class LongTermMemory:
 
     # ── Store ──────────────────────────────────────────────────────────
 
+    _MAX_MEMORIES = 500  # prune oldest when exceeded
+
     def store_conversation(
         self, user_text: str, assistant_text: str, lang: str = "en"
     ):
@@ -65,6 +67,20 @@ class LongTermMemory:
             ("conversation", content, keywords, lang),
         )
         self._conn.commit()
+        self._prune_if_needed()
+
+    def _prune_if_needed(self):
+        """Delete oldest, least-relevant memories when count exceeds limit."""
+        count = self._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        if count > self._MAX_MEMORIES:
+            excess = count - self._MAX_MEMORIES
+            self._conn.execute(
+                "DELETE FROM memories WHERE id IN ("
+                "  SELECT id FROM memories ORDER BY relevance_count ASC, id ASC LIMIT ?"
+                ")", (excess,)
+            )
+            self._conn.commit()
+            print(f"[LTM] Pruned {excess} old memories (kept {self._MAX_MEMORIES})")
 
     def store_preference(self, key: str, value: str):
         """Store or update a user preference."""

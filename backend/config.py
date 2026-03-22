@@ -111,6 +111,23 @@ class Config:
 
 
 config = Config()
+
+# ── Post-init validation ──────────────────────────────────────────
+_errors = []
+if config.mode not in ("cloud", "local"):
+    _errors.append(f"S2S_MODE must be 'cloud' or 'local', got '{config.mode}'")
+if config.sample_rate_in not in (8000, 16000, 22050, 44100, 48000):
+    _errors.append(f"sample_rate_in={config.sample_rate_in} is unusual (expected 16000)")
+if not 0.1 <= config.vad_threshold <= 0.99:
+    _errors.append(f"vad_threshold={config.vad_threshold} out of range [0.1, 0.99]")
+if config.mode == "cloud" and (not config.groq_api_key or config.groq_api_key.startswith("gsk_your")):
+    print("[Config] WARNING: GROQ_API_KEY not set — cloud mode will fail")
+if config.tts_sample_rate not in (16000, 22050, 24000, 44100, 48000):
+    _errors.append(f"tts_sample_rate={config.tts_sample_rate} is unusual")
+if _errors:
+    for e in _errors:
+        print(f"[Config] ERROR: {e}")
+
 print(f"[Config] Mode: {config.mode.upper()}")
 if config.mode == "cloud":
     print(f"[Config] LLM: Groq -> {config.groq_llm_model}")

@@ -190,9 +190,13 @@ class GroqASR:
                 text_lang = _detect_lang_from_text(text)
 
                 # If text is clearly German but we transcribed as English,
-                # re-transcribe with language="de" for better accuracy
-                if text_lang == "de":
-                    log.info(f"[ASR] German detected in text, re-transcribing with lang=de")
+                # re-transcribe with language="de" for better accuracy.
+                # Only re-transcribe if we have strong German signals (avoid
+                # doubling API calls on false positives).
+                words = set(text.lower().split())
+                de_word_count = len(words & _DE_WORDS)
+                if text_lang == "de" and de_word_count >= 2:
+                    log.info(f"[ASR] German detected ({de_word_count} keywords), re-transcribing with lang=de")
                     try:
                         de_transcription = self._client.audio.transcriptions.create(
                             file=("audio.wav", wav_bytes),

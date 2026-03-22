@@ -84,9 +84,14 @@ def parse_inbound(message: dict) -> Optional[InboundMessage]:
     """
     # Binary audio frame
     if "bytes" in message and message["bytes"]:
+        raw = message["bytes"]
+        # Validate: Int16 PCM requires even byte length, minimum 2 bytes
+        if len(raw) < 2 or len(raw) % 2 != 0:
+            log.warning(f"[IO] Invalid audio frame: {len(raw)} bytes (must be even, >= 2)")
+            return None
         return InboundMessage(
             type=InboundMessageType.AUDIO,
-            audio_bytes=message["bytes"],
+            audio_bytes=raw,
         )
 
     # JSON control message

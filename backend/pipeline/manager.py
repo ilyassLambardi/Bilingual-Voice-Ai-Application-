@@ -403,8 +403,8 @@ class PipelineManager:
         # Use lock to prevent concurrent pipeline runs (race condition fix)
         if self._pipeline_lock.locked() or self._generating:
             print("[VAD] Flush deferred -- pipeline still busy, retrying in 500ms")
-            self._accumulation_timer = None
             # DON'T clear buffer -- preserve user's speech for retry
+            # Set new timer directly (no None gap to prevent race condition)
             loop = asyncio.get_running_loop()
             self._accumulation_timer = loop.call_later(
                 0.5,
@@ -438,7 +438,17 @@ class PipelineManager:
         async with self._pipeline_lock:
             self._interrupt.clear()
             try:
-                await self._run_pipeline_inner(audio, send)
+                # 30s hard timeout prevents indefinite hangs on API failures
+                await asyncio.wait_for(
+                    self._run_pipeline_inner(audio, send),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                print("[Pipeline] TIMEOUT: pipeline exceeded 30s, aborting")
+                self._generating = False
+                self.state = "idle"
+                await send(json.dumps({"type": "state", "state": "idle"}))
+                await send(json.dumps({"type": "error", "message": "Response timed out. Please try again."}))
             except Exception as e:
                 print(f"[Pipeline] ERROR: {e}")
                 traceback.print_exc()
