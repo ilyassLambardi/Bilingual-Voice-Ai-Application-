@@ -12,7 +12,8 @@ from typing import Optional
 
 import numpy as np
 import torch
-from collections import Counter
+
+from .hallucination_filter import filter_hallucination, VALID_SHORT
 
 try:
     import whisper
@@ -70,42 +71,8 @@ class ASRProcessor:
     falls back to faster-whisper base if not found.
     """
 
-    # Common Whisper hallucination patterns (noise → fake text)
-    _HALLUCINATIONS = {
-        # English
-        "thank you", "thanks", "thanks for watching", "thank you for watching",
-        "subscribe", "like and subscribe", "like subscribe",
-        "please subscribe", "hit the bell",
-        "bye", "goodbye", "you", "the", "the end",
-        "um", "uh", "hmm", "huh", "oh", "ah",
-        ".", "..", "...",
-        "subtitles by", "amara.org", "subtitles made by",
-        "copyright", "all rights reserved",
-        "music", "applause", "laughter",
-        # German
-        "danke", "danke schön", "danke schon", "tschüss", "tschuss",
-        "wie geht's die", "wie gehts die", "wie geht es dir",
-        "wie geht's", "wie gehts", "hallo wie geht's",
-        "guten tag", "auf wiedersehen", "bis bald",
-        "vielen dank", "herzlich willkommen",
-        "untertitel von", "untertitelung", "untertitel",
-        "musik",
-    }
-
-    _HALLUCINATION_SUBSTRINGS = [
-        "thanks for watching", "thank you for watching",
-        "subscribe", "subtitles by", "amara.org",
-        "untertitel", "copyright",
-        "please like", "hit the bell",
-    ]
-
-    _VALID_SHORT = {
-        "yes", "no", "ok", "okay", "hi", "hey", "why", "how",
-        "what", "when", "who", "where", "help", "stop", "go",
-        "ja", "nein", "gut", "naja", "ach", "doch", "klar",
-        "wow", "cool", "nice", "sure", "fine", "yep", "nah",
-        "hallo", "hello", "bitte", "genau",
-    }
+    # Hallucination filtering is now handled by the shared
+    # hallucination_filter module — see pipeline/hallucination_filter.py
 
     def __init__(
         self,
@@ -228,9 +195,10 @@ class ASRProcessor:
         )
 
         text = result["text"].strip()
+        duration = len(audio) / 16000.0
 
         # Filter hallucinations and short noise
-        text = self._filter_text(text)
+        text = self._filter_text(text, duration_s=duration)
 
         return {
             "text": text,
@@ -257,12 +225,16 @@ class ASRProcessor:
             condition_on_previous_text=False,
         )
         parts = []
+        nsp_values = []
         for seg in segments:
+            nsp_values.append(seg.no_speech_prob)
             if seg.no_speech_prob < 0.7:
                 parts.append(seg.text)
         text = " ".join(parts).strip()
+        avg_nsp = sum(nsp_values) / len(nsp_values) if nsp_values else 0.0
         whisper_lang = info.language if info.language in ALLOWED_LANGUAGES else "en"
         lang_prob = info.language_probability
+        duration = len(audio) / 16000.0
 
         # Text-based language detection — only switch to German if clearly German
         text_lang = _detect_lang_from_text(text)
@@ -295,7 +267,7 @@ class ASRProcessor:
             detected = "en"
             print(f"[ASR] EN (default)")
 
-        text = self._filter_text(text)
+        text = self._filter_text(text, no_speech_prob=avg_nsp, duration_s=duration)
         return {"text": text, "language": detected, "language_prob": round(lang_prob, 3)}
 
     def _transcribe_fast(self, audio: np.ndarray) -> dict:
@@ -312,59 +284,28 @@ class ASRProcessor:
             log_prob_threshold=-0.8,
             condition_on_previous_text=False,
         )
-        parts = [seg.text for seg in segments if seg.no_speech_prob < 0.7]
+        nsp_vals = []
+        parts = []
+        for seg in segments:
+            nsp_vals.append(seg.no_speech_prob)
+            if seg.no_speech_prob < 0.7:
+                parts.append(seg.text)
         detected = info.language if info.language in ALLOWED_LANGUAGES else "en"
-        text = self._filter_text(" ".join(parts).strip())
+        avg_nsp = sum(nsp_vals) / len(nsp_vals) if nsp_vals else 0.0
+        text = self._filter_text(" ".join(parts).strip(), no_speech_prob=avg_nsp)
         return {"text": text, "language": detected, "language_prob": 0.0}
 
-    def _filter_text(self, text: str) -> str:
-        """Filter hallucinations and noise — aggressive but safe."""
-        raw_lower = text.lower().strip()
-
-        # Catch pure punctuation
-        if not raw_lower or all(ch in '., !?…-–—' for ch in raw_lower):
-            print(f"[ASR] Filtered noise/punctuation: '{text}'")
-            return ""
-
-        cleaned = raw_lower.strip("., !?…-–—")
-        if not cleaned:
-            print(f"[ASR] Filtered empty after strip: '{text}'")
-            return ""
-
-        # Exact hallucination match
-        if cleaned in self._HALLUCINATIONS:
-            print(f"[ASR] Filtered hallucination: '{text}'")
-            return ""
-
-        # Substring hallucination match
-        for sub in self._HALLUCINATION_SUBSTRINGS:
-            if sub in cleaned:
-                print(f"[ASR] Filtered hallucination substring '{sub}' in: '{text}'")
-                return ""
-
-        # Repetition detection
-        words = cleaned.split()
-        if len(words) >= 3:
-            unique = set(words)
-            if len(unique) == 1:
-                print(f"[ASR] Filtered repetition: '{text}'")
-                return ""
-            most_common_count = Counter(words).most_common(1)[0][1]
-            if most_common_count / len(words) > 0.7:
-                print(f"[ASR] Filtered dominant repetition: '{text}'")
-                return ""
-
-        # Repeated sentence pattern
-        sentences = [s.strip().strip('.,!?').lower() for s in text.split('.') if s.strip()]
-        if len(sentences) >= 2:
-            unique_sentences = set(sentences)
-            if len(unique_sentences) == 1 and sentences[0] in self._HALLUCINATIONS:
-                print(f"[ASR] Filtered repeated hallucination sentence: '{text}'")
-                return ""
-
-        # Too-short filter: block ≤2 char single words UNLESS known valid
-        if len(words) == 1 and len(cleaned) <= 2 and cleaned not in self._VALID_SHORT:
-            print(f"[ASR] Filtered too-short: '{text}'")
-            return ""
-
-        return text
+    @staticmethod
+    def _filter_text(
+        text: str,
+        no_speech_prob: float = 0.0,
+        log_prob: float = 0.0,
+        duration_s: float = 0.0,
+    ) -> str:
+        """Filter hallucinations using the shared advanced filter."""
+        return filter_hallucination(
+            text,
+            no_speech_prob=no_speech_prob if no_speech_prob else None,
+            log_prob=log_prob if log_prob else None,
+            duration_s=duration_s if duration_s else None,
+        )

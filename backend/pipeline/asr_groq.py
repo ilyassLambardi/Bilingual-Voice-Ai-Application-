@@ -17,7 +17,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import numpy as np
-from collections import Counter
+
+from .hallucination_filter import filter_hallucination, VALID_SHORT
 
 log = logging.getLogger("s2s.asr")
 _pool = ThreadPoolExecutor(max_workers=2)
@@ -77,45 +78,6 @@ def _audio_to_wav_bytes(audio: np.ndarray, sample_rate: int = 16000) -> bytes:
     return buf.getvalue()
 
 
-# ── Consolidated hallucination patterns (lowercased, stripped) ──────────
-_HALLUCINATIONS = {
-    # English Whisper noise hallucinations
-    "thank you", "thanks", "thanks for watching", "thank you for watching",
-    "subscribe", "like and subscribe", "like subscribe",
-    "please subscribe", "hit the bell",
-    "bye", "goodbye", "you", "the", "the end",
-    "um", "uh", "hmm", "huh",
-    "oh", "ah",
-    "subtitles by", "amara.org", "subtitles made by",
-    "copyright", "all rights reserved",
-    "music", "applause", "laughter",
-    # German Whisper noise hallucinations
-    "danke", "danke schön", "danke schon", "tschüss", "tschuss",
-    "wie geht's die", "wie gehts die", "wie geht es dir",
-    "wie geht's", "wie gehts", "hallo wie geht's",
-    "guten tag", "auf wiedersehen", "bis bald",
-    "vielen dank", "herzlich willkommen",
-    "untertitel von", "untertitelung", "untertitel",
-    "musik",
-}
-
-# Substrings that indicate hallucination (catches partial matches)
-_HALLUCINATION_SUBSTRINGS = [
-    "thanks for watching", "thank you for watching",
-    "subscribe", "subtitles by", "amara.org",
-    "untertitel", "copyright",
-    "please like", "hit the bell",
-]
-
-# Short words that are valid conversational input (never filter these)
-_VALID_SHORT = {
-    "yes", "no", "ok", "okay", "hi", "hey", "why", "how",
-    "what", "when", "who", "where", "help", "stop", "go",
-    "ja", "nein", "gut", "naja", "ach", "doch", "klar",
-    "wow", "cool", "nice", "sure", "fine", "yep", "nah",
-    "hallo", "hello", "bitte", "genau",
-}
-
 
 class GroqASR:
     """Async ASR via Groq Whisper API — large-v3, bilingual EN+DE."""
@@ -172,17 +134,21 @@ class GroqASR:
 
                 # ── Parse segments for no_speech_prob filtering ──
                 segments = getattr(transcription, 'segments', None)
+                avg_nsp = 0.0
                 if segments and isinstance(segments, list):
                     # Filter out segments with high no_speech_prob
                     good_parts = []
+                    nsp_values = []
                     for seg in segments:
                         nsp = getattr(seg, 'no_speech_prob', 0.0)
                         seg_text = getattr(seg, 'text', '').strip()
+                        nsp_values.append(nsp)
                         if nsp < 0.6 and seg_text:
                             good_parts.append(seg_text)
                         else:
                             log.info(f"[ASR] Dropped segment (no_speech={nsp:.2f}): '{seg_text}'")
                     text = " ".join(good_parts).strip()
+                    avg_nsp = sum(nsp_values) / len(nsp_values) if nsp_values else 0.0
                 else:
                     # Fallback: use full text
                     text = transcription.text.strip() if transcription.text else ""
@@ -226,7 +192,7 @@ class GroqASR:
                     detected = "en"
                     log.info(f"[ASR] EN (default)")
 
-                text = self._filter_text(text)
+                text = self._filter_text(text, no_speech_prob=avg_nsp, duration_s=duration)
 
                 return {
                     "text": text,
@@ -247,56 +213,16 @@ class GroqASR:
         return {"text": "", "language": "en", "language_prob": 0.0}
 
     @staticmethod
-    def _filter_text(text: str) -> str:
-        """Filter hallucinations and noise — aggressive but safe."""
-        raw_lower = text.lower().strip()
-
-        # Catch pure punctuation / dots
-        if not raw_lower or all(ch in '., !?…-–—' for ch in raw_lower):
-            log.info(f"[ASR] Filtered noise/punctuation: '{text}'")
-            return ""
-
-        cleaned = raw_lower.strip("., !?…-–—")
-        if not cleaned:
-            log.info(f"[ASR] Filtered empty after strip: '{text}'")
-            return ""
-
-        # Exact hallucination match
-        if cleaned in _HALLUCINATIONS:
-            log.info(f"[ASR] Filtered hallucination: '{text}'")
-            return ""
-
-        # Substring hallucination match (catches "Thanks for watching everyone!")
-        for sub in _HALLUCINATION_SUBSTRINGS:
-            if sub in cleaned:
-                log.info(f"[ASR] Filtered hallucination substring '{sub}' in: '{text}'")
-                return ""
-
-        # Repetition detection: noise produces "Thank you. Thank you. Thank you."
-        words = cleaned.split()
-        if len(words) >= 3:
-            unique = set(words)
-            # All same word
-            if len(unique) == 1:
-                log.info(f"[ASR] Filtered repetition: '{text}'")
-                return ""
-            # Mostly same word (>70%)
-            most_common_count = Counter(words).most_common(1)[0][1]
-            if most_common_count / len(words) > 0.7:
-                log.info(f"[ASR] Filtered dominant repetition: '{text}'")
-                return ""
-
-        # Repeated sentence pattern: "Thank you. Thank you."
-        sentences = [s.strip().strip('.,!?').lower() for s in text.split('.') if s.strip()]
-        if len(sentences) >= 2:
-            unique_sentences = set(sentences)
-            if len(unique_sentences) == 1 and sentences[0] in _HALLUCINATIONS:
-                log.info(f"[ASR] Filtered repeated hallucination sentence: '{text}'")
-                return ""
-
-        # Too-short filter: block ≤2 char single words UNLESS they're known valid
-        if len(words) == 1 and len(cleaned) <= 2 and cleaned not in _VALID_SHORT:
-            log.info(f"[ASR] Filtered too-short: '{text}'")
-            return ""
-
-        return text
+    def _filter_text(
+        text: str,
+        no_speech_prob: float = 0.0,
+        log_prob: float = 0.0,
+        duration_s: float = 0.0,
+    ) -> str:
+        """Filter hallucinations using the shared advanced filter."""
+        return filter_hallucination(
+            text,
+            no_speech_prob=no_speech_prob if no_speech_prob else None,
+            log_prob=log_prob if log_prob else None,
+            duration_s=duration_s if duration_s else None,
+        )
