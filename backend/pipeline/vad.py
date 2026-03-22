@@ -1,4 +1,4 @@
-"""Voice Activity Detection — Silero VAD (streaming mode) with noise cancellation.
+"""Module 2 (Processing/Core): Voice Activity Detection — Silero VAD with noise cancellation.
 
 Processes 512-sample chunks (32 ms @ 16 kHz) and emits speech
 start / end events.  Includes:

@@ -1,5 +1,5 @@
 """
-Long-Term Memory (LTM) — SQLite-backed conversational memory.
+Module 3 (Data Storage/State): Long-Term Memory (LTM) — SQLite-backed conversational memory.
 
 Stores conversation summaries and user preferences for cross-session
 context.  Uses lightweight TF-IDF vectors for semantic retrieval

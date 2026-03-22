@@ -1,5 +1,5 @@
 """
-LLM — llama-cpp-python (primary) or HuggingFace transformers (fallback).
+Module 2 (Processing/Core): LLM — llama-cpp-python (primary) or HuggingFace transformers (fallback).
 
 Primary: GGUF model via llama-cpp-python with streaming tokens.
 Fallback: DialoGPT-medium via transformers (auto-loaded when no GGUF).

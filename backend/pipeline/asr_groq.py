@@ -1,5 +1,5 @@
 """
-ASR provider — Groq Whisper API (large-v3).
+Module 2 (Processing/Core): ASR provider — Groq Whisper API (large-v3).
 
 Uses Groq's hosted Whisper large-v3 for transcription.
 Free tier, extremely fast (~0.3s for most utterances), near-perfect accuracy.

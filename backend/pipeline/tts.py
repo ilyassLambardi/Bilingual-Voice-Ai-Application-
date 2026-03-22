@@ -1,5 +1,5 @@
 """
-TTS — Silero TTS v3 (VITS architecture, torch.hub).
+Module 2 (Processing/Core): TTS — Silero TTS v3 (VITS architecture, torch.hub).
 
 Synthesises text → raw Int16 PCM bytes entirely in RAM.
 Supports English and German with lazy-loaded per-language models.

@@ -1,5 +1,5 @@
 """
-TTS — Microsoft Edge Neural TTS.
+Module 2 (Processing/Core): TTS — Microsoft Edge Neural TTS.
 
 Uses edge-tts to access Microsoft's high-quality neural voices.
 A single multilingual voice speaks both English and German naturally,

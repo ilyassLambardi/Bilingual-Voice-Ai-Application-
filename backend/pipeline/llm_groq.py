@@ -1,5 +1,5 @@
 """
-LLM provider — Groq Cloud API (Llama-3.3-70B-Versatile).
+Module 2 (Processing/Core): LLM provider — Groq Cloud API (Llama-3.3-70B-Versatile).
 
 Streaming chat completions via Groq's ultra-fast inference.
 Free tier: 30 RPM, ~14k tokens/day — enough for demos + testing.

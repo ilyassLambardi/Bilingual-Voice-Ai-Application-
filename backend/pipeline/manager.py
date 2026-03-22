@@ -1,13 +1,29 @@
 """
-Pipeline Manager — async orchestrator for the S2S loop.
+Module 4: Control Flow / Scheduling — Pipeline Manager.
 
-Three-stage async flow:
-    1. Mic → VAD → Whisper
-    2. Whisper → LLM  (streaming tokens)
-    3. LLM sentence → TTS → WebSocket binary
+This module is the **central orchestrator** for the real-time
+Speech-to-Speech pipeline.  It schedules and coordinates the four
+processing stages:
 
-Supports interruptibility: if the user speaks while the AI is
-talking, we kill TTS output and flush the queues immediately.
+    1. VAD  → detect speech boundaries in streaming audio
+    2. ASR  → transcribe completed utterances
+    3. LLM  → generate conversational response (streaming tokens)
+    4. TTS  → synthesise speech (sentence-by-sentence, concurrent)
+
+Architecture role:
+    - **Module 1 (I/O)**:  ``io_handler.py`` — message parsing & sending
+    - **Module 2 (Core)**:  ``vad.py``, ``asr*.py``, ``llm*.py``, ``tts*.py``
+    - **Module 3 (State)**: ``session_state.py`` + ``memory.py`` — all mutable state
+    - **Module 4 (This)**:  ``manager.py`` — control flow, scheduling,
+      interrupt handling, accumulation timers, pipeline sequencing
+
+The manager reads/writes session state from Module 3, dispatches
+work to the processing modules (Module 2), and communicates results
+back through the I/O layer (Module 1).
+
+Supports full interruptibility: if the user speaks while the AI is
+talking, the interrupt scheduler stops TTS output, preserves the
+user’s speech, and restarts the pipeline.
 """
 
 import asyncio
@@ -21,16 +37,32 @@ from typing import Callable, Optional
 
 import numpy as np
 
+# Module 2: Processing / Logic (Core)
 from .vad import VADProcessor
 from .asr import ASRProcessor
 from .llm import LLMProcessor, FallbackLLM
 from .tts import TTSProcessor, _detect_sentence_lang
+
+# Module 3: Data Storage / State Management
+from .session_state import SessionState, InterruptState, AudioBuffer
 from .memory import LongTermMemory
 
-log = logging.getLogger("s2s.pipeline")
+# Module 1: Input / Output
+from .io_handler import (
+    SendFn,
+    build_state_message,
+    build_transcript_message,
+    build_partial_transcript,
+    build_audio_config,
+    build_audio_end,
+    build_interrupt,
+    build_backchannel,
+    build_ghost_text,
+    build_language_shift,
+    build_error,
+)
 
-# Type alias for the WebSocket send function
-SendFn = Callable[[str | bytes], None]
+log = logging.getLogger("s2s.pipeline")
 
 
 def _safe_print(msg: str):
@@ -97,13 +129,27 @@ _HALLUCINATION_SUBSTRINGS = [
 
 
 class PipelineManager:
-    """Coordinates VAD → ASR → LLM → TTS with full interruptibility."""
+    """Module 4: Control Flow / Scheduling.
+
+    Orchestrates VAD → ASR → LLM → TTS with full interruptibility.
+
+    Uses:
+        - Module 1 (io_handler) for message building
+        - Module 2 (vad, asr, llm, tts) for processing
+        - Module 3 (SessionState, LongTermMemory) for state management
+    """
 
     def __init__(self, config):
         self.config = config
+
+        # ── Module 3: Session state (single source of truth) ──────────
+        self._session = SessionState(
+            accumulation_delay=3.0,
+            rate_limit=25,
+        )
         self.state = "idle"
 
-        # ── Models ────────────────────────────────────────────────────
+        # ── Module 2: Processing models ───────────────────────────────
         self._vad: Optional[VADProcessor] = None
         self._asr: Optional[ASRProcessor] = None
         self._llm: Optional[LLMProcessor] = None
@@ -114,34 +160,32 @@ class PipelineManager:
         # ── Pipeline lock (prevents concurrent pipeline runs) ─────────
         self._pipeline_lock = asyncio.Lock()
 
-        # ── Interrupt mechanics ───────────────────────────────
-        self._interrupt = asyncio.Event()
+        # ── Interrupt mechanics (delegated to SessionState) ───────────
+        self._interrupt = self._session.interrupt.event
         self._generating = False          # True while LLM+TTS is running
         self._gen_task: Optional[asyncio.Task] = None
-        self._interrupt_speech_frames = 0  # consecutive speaking frames during generation
-        self._interrupt_threshold = 4     # ~128ms sustained speech to interrupt (fast response)
+        self._interrupt_speech_frames = 0
+        self._interrupt_threshold = self._session.interrupt.threshold
+        self._backchannel_max_frames = self._session.interrupt.backchannel_max_frames
+        self._backchannel_cooldown = 0
 
-        # ── Backchanneling (smart: ignore "mhm", "yeah", short affirmations) ──
-        self._backchannel_max_frames = 12   # ~384ms — shorter = affirmation, longer = real interrupt
-        self._backchannel_cooldown = 0      # cooldown frames after backchannel detection
-
-        # ── Language shift detection ─────────────────────────────────
-        self._lang_history: list[str] = []  # last N detected languages
-        self._lang_history_max = 5          # track last 5 messages
+        # ── Language shift detection (delegated to SessionState) ──────
+        self._lang_history: list[str] = []
+        self._lang_history_max = 5
 
         # ── Ghost texting (partial ASR while speaking) ─────────────────
-        self._ghost_counter = 0           # audio chunks since last ghost
-        self._ghost_interval = 25         # run ghost ASR every ~25 chunks (~800ms)
+        self._ghost_counter = 0
+        self._ghost_interval = 25
 
-        # ── Audio accumulation (merge split speech into one big utterance) ──
-        self._audio_buffer: list[np.ndarray] = []   # accumulated audio fragments
+        # ── Audio accumulation (delegated to SessionState) ────────────
+        self._audio_buffer: list[np.ndarray] = []
         self._accumulation_timer: Optional[asyncio.TimerHandle] = None
-        self._accumulation_delay = 3.0     # seconds of silence before processing (balance: slow speakers vs responsiveness)
-        self._send_fn: Optional[SendFn] = None  # cached for timer callback
+        self._accumulation_delay = 3.0
+        self._send_fn: Optional[SendFn] = None
 
-        # ── Rate limiting (protect Groq free tier: 30 RPM) ──────────────
-        self._request_times: list[float] = []  # timestamps of recent API calls
-        self._rate_limit = 25                  # leave headroom below 30 RPM
+        # ── Rate limiting (delegated to SessionState) ─────────────────
+        self._request_times: list[float] = []
+        self._rate_limit = 25
 
     # ── Async model loading (runs in thread pool — non-blocking) ──────
 

@@ -1,12 +1,20 @@
 """
 FastAPI WebSocket server for the Speech-to-Speech pipeline.
 
+This is the application entry point that wires together the four
+architectural modules:
+
+    Module 1 — I/O:         ``pipeline/io_handler.py``
+    Module 2 — Processing:  ``pipeline/vad.py``, ``asr*.py``, ``llm*.py``, ``tts*.py``
+    Module 3 — State:       ``pipeline/session_state.py``, ``pipeline/memory.py``
+    Module 4 — Scheduling:  ``pipeline/manager.py``
+
 Supports two modes:
   cloud  — Groq API for LLM + ASR, per-session managers (multi-user)
   local  — local GPU models, shared manager (single-user dev)
 
-Protocol
---------
+Protocol (defined in Module 1 — io_handler)
+--------------------------------------------
 Client → Server:
     binary   Raw Int16 PCM, 16 kHz mono, 512-sample frames (~32 ms each).
     json     {"type": "clear"}   — reset conversation.
@@ -36,6 +44,12 @@ import uvicorn
 
 from config import config
 from pipeline.manager import PipelineManager
+from pipeline.io_handler import (
+    parse_inbound,
+    InboundMessageType,
+    make_safe_send,
+    build_state_message,
+)
 
 log = logging.getLogger("s2s")
 
@@ -132,39 +146,36 @@ async def ws_endpoint(ws: WebSocket):
     else:
         mgr = _shared_manager
 
-    # Create send closure ONCE per connection (not per-chunk)
-    send = _make_send(ws)
+    # Module 1 (I/O): Create send closure ONCE per connection
+    send = make_safe_send(ws)
 
-    await ws.send_text(json.dumps({
-        "type": "state",
-        "state": "idle" if mgr._models_ready else "loading",
-    }))
+    await ws.send_text(build_state_message(
+        "idle" if mgr._models_ready else "loading"
+    ))
 
     try:
         while True:
-            message = await ws.receive()
+            raw_message = await ws.receive()
 
-            if "bytes" in message and message["bytes"]:
+            # Module 1 (I/O): Parse inbound message
+            msg = parse_inbound(raw_message)
+            if msg is None:
+                continue
+
+            if msg.type == InboundMessageType.AUDIO:
                 try:
-                    await mgr.handle_audio_chunk(message["bytes"], send)
+                    await mgr.handle_audio_chunk(msg.audio_bytes, send)
                 except Exception as e:
                     log.error(f"[WS:{session_id}] Audio error: {e}")
 
-            elif "text" in message and message["text"]:
-                try:
-                    data = json.loads(message["text"])
-                except json.JSONDecodeError:
-                    continue
+            elif msg.type == InboundMessageType.CLEAR:
+                await mgr.clear(send)
 
-                msg_type = data.get("type")
-                if msg_type == "clear":
-                    await mgr.clear(send)
-                elif msg_type == "chat":
-                    text = data.get("text", "").strip()
-                    if text:
-                        await mgr.handle_text_chat(text, send)
-                elif msg_type == "config":
-                    _apply_session_config(data, mgr)
+            elif msg.type == InboundMessageType.CHAT:
+                await mgr.handle_text_chat(msg.text, send)
+
+            elif msg.type == InboundMessageType.CONFIG:
+                _apply_session_config(msg.config_data, mgr)
 
     except WebSocketDisconnect:
         log.info(f"[WS:{session_id}] Client disconnected.")
@@ -177,17 +188,7 @@ async def ws_endpoint(ws: WebSocket):
         log.info(f"[WS:{session_id}] Session ended. Active: {len(_sessions)}")
 
 
-def _make_send(ws: WebSocket):
-    """Return an async callable that sends text or bytes."""
-    async def _send(payload: str | bytes):
-        try:
-            if isinstance(payload, bytes):
-                await ws.send_bytes(payload)
-            else:
-                await ws.send_text(payload)
-        except Exception:
-            pass  # client may have disconnected
-    return _send
+# NOTE: _make_send moved to Module 1 (pipeline/io_handler.py) as make_safe_send
 
 
 async def _cleanup_session(mgr: PipelineManager):

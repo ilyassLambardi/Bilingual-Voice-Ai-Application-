@@ -1,5 +1,5 @@
 """
-ASR — openai-whisper with local large-v3-turbo model, or faster-whisper fallback.
+Module 2 (Processing/Core): ASR — openai-whisper with local large-v3-turbo model, or faster-whisper fallback.
 
 Transcribes float32 numpy audio → text.  No file I/O.
 """
