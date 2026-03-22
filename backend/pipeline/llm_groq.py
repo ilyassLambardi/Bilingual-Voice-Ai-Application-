@@ -117,12 +117,16 @@ class GroqLLM:
             yield token
 
     def _build_messages(self, user_text: str, lang: str = "en") -> list[dict]:
-        context_hint = (
-            f"[ASR detected: {lang} — IGNORE this tag. Analyze the user's actual intent.]\n"
-            "Apply MIRRORING: match the user's language. If they mix languages, "
-            "respond in the dominant one. If they ask about a word's meaning, "
-            "activate TEACHER MODE.\n"
-        )
+        if lang == "de":
+            context_hint = (
+                "[The user is speaking GERMAN. Respond fully in German. "
+                "Use natural German speech patterns and fillers.]\n"
+            )
+        else:
+            context_hint = (
+                "[The user is speaking ENGLISH. Respond in English. "
+                "Do NOT use any German unless the user explicitly asks about German words.]\n"
+            )
 
         # Detect teacher mode intent
         lower = user_text.lower()

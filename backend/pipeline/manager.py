@@ -887,17 +887,28 @@ class PipelineManager:
 
     @staticmethod
     def _detect_text_language(text: str) -> str:
-        """Simple heuristic to detect if typed text is German or English."""
-        _DE_MARKERS = {
-            "ä", "ö", "ü", "ß", "ich", "bin", "ist", "und", "der", "die",
+        """Detect if typed text is German or English.
+
+        English is the strong default.  Only returns 'de' when the text
+        is clearly German (special chars + keyword, or >= 40% keywords).
+        """
+        _DE_CHARS = {"ä", "ö", "ü", "ß"}
+        _DE_WORDS = {
+            "ich", "bin", "ist", "und", "der", "die",
             "das", "ein", "eine", "nicht", "wie", "was", "hallo", "danke",
             "bitte", "gut", "mir", "dir", "mich", "dich", "kannst", "hast",
             "wir", "sie", "haben", "werden", "können", "möchte", "geht",
         }
         words = set(text.lower().split())
         chars = set(text.lower())
-        de_score = len(words & _DE_MARKERS) + len(chars & {"ä", "ö", "ü", "ß"})
-        return "de" if de_score >= 2 else "en"
+        has_de_chars = bool(chars & _DE_CHARS)
+        de_word_hits = len(words & _DE_WORDS)
+        # Require special chars + at least 1 keyword, or >= 40% keywords
+        if has_de_chars and de_word_hits >= 1:
+            return "de"
+        if len(words) >= 2 and de_word_hits / len(words) >= 0.4:
+            return "de"
+        return "en"
 
     # ── Session reset ─────────────────────────────────────────────────
 

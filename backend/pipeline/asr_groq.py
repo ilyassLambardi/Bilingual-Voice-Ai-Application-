@@ -41,13 +41,21 @@ _DE_WORDS = {
 
 
 def _detect_lang_from_text(text: str) -> str:
-    """Detect language from transcribed text using characters + keywords."""
+    """Detect language from transcribed text using characters + keywords.
+
+    English is the strong default.  Only returns 'de' when the text
+    is *clearly* German (special chars OR >= 40 % German keywords).
+    """
     lower = text.lower()
-    if any(ch in lower for ch in _DE_CHARS):
-        return "de"
     words = set(lower.split())
+    # German-specific characters are a strong signal, but require
+    # at least one German keyword too (avoids false positives on names)
+    has_de_chars = any(ch in lower for ch in _DE_CHARS)
     de_hits = len(words & _DE_WORDS)
-    if len(words) > 0 and de_hits / len(words) >= 0.25:
+    if has_de_chars and de_hits >= 1:
+        return "de"
+    # Pure keyword ratio — must be clearly German (>= 40 %)
+    if len(words) >= 2 and de_hits / len(words) >= 0.4:
         return "de"
     return "en"
 
@@ -151,11 +159,13 @@ class GroqASR:
 
         for attempt in range(max_retries + 1):
             try:
-                # No prompt — avoids Whisper hallucinating the prompt itself
+                # Default to English — only switch to German based on
+                # text-based post-detection (more reliable than Whisper's
+                # auto-detect which often misclassifies short English)
                 transcription = self._client.audio.transcriptions.create(
                     file=("audio.wav", wav_bytes),
                     model=self._model,
-                    language=None,  # auto-detect
+                    language="en",  # English default
                     response_format="verbose_json",
                 )
 
@@ -176,18 +186,40 @@ class GroqASR:
                     # Fallback: use full text
                     text = transcription.text.strip() if transcription.text else ""
 
-                api_lang = getattr(transcription, 'language', 'en') or 'en'
-
-                if api_lang not in ALLOWED_LANGUAGES:
-                    api_lang = "en"
-
+                # Text-based language detection (more reliable than Whisper auto)
                 text_lang = _detect_lang_from_text(text)
-                if text_lang != api_lang:
-                    detected = text_lang
-                    log.info(f"[ASR] {detected.upper()} (text-detect override, API said {api_lang.upper()})")
+
+                # If text is clearly German but we transcribed as English,
+                # re-transcribe with language="de" for better accuracy
+                if text_lang == "de":
+                    log.info(f"[ASR] German detected in text, re-transcribing with lang=de")
+                    try:
+                        de_transcription = self._client.audio.transcriptions.create(
+                            file=("audio.wav", wav_bytes),
+                            model=self._model,
+                            language="de",
+                            response_format="verbose_json",
+                        )
+                        de_segments = getattr(de_transcription, 'segments', None)
+                        if de_segments and isinstance(de_segments, list):
+                            de_parts = []
+                            for seg in de_segments:
+                                nsp = getattr(seg, 'no_speech_prob', 0.0)
+                                seg_text = getattr(seg, 'text', '').strip()
+                                if nsp < 0.6 and seg_text:
+                                    de_parts.append(seg_text)
+                            de_text = " ".join(de_parts).strip()
+                        else:
+                            de_text = de_transcription.text.strip() if de_transcription.text else ""
+                        if de_text:
+                            text = de_text
+                    except Exception as de_err:
+                        log.warning(f"[ASR] German re-transcribe failed ({de_err}), using English result")
+                    detected = "de"
+                    log.info(f"[ASR] DE (text-detect)")
                 else:
-                    detected = api_lang
-                    log.info(f"[ASR] {detected.upper()} (API)")
+                    detected = "en"
+                    log.info(f"[ASR] EN (default)")
 
                 text = self._filter_text(text)
 

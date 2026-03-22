@@ -40,14 +40,21 @@ _DE_WORDS = {
 
 
 def _detect_lang_from_text(text: str) -> str:
-    """Detect language from transcribed text using characters + keywords."""
+    """Detect language from transcribed text using characters + keywords.
+
+    English is the strong default.  Only returns 'de' when the text
+    is *clearly* German (special chars OR >= 40 % German keywords).
+    """
     lower = text.lower()
-    # German-specific characters are a very strong signal
-    if any(ch in lower for ch in _DE_CHARS):
-        return "de"
     words = set(lower.split())
+    # German-specific characters are a strong signal, but require
+    # at least one German keyword too (avoids false positives on names)
+    has_de_chars = any(ch in lower for ch in _DE_CHARS)
     de_hits = len(words & _DE_WORDS)
-    if len(words) > 0 and de_hits / len(words) >= 0.25:
+    if has_de_chars and de_hits >= 1:
+        return "de"
+    # Pure keyword ratio — must be clearly German (>= 40 %)
+    if len(words) >= 2 and de_hits / len(words) >= 0.4:
         return "de"
     return "en"
 
@@ -236,11 +243,12 @@ class ASRProcessor:
         Uses initial_prompt to prime Whisper for bilingual detection.
         Falls back to forced-DE pass if auto-detect confidence is very low.
         """
-        # No biasing prompt — avoids Whisper hallucinating the prompt itself
+        # Default to English — only switch to German based on
+        # text-based post-detection (more reliable than auto-detect)
         segments, info = self.model.transcribe(
             audio,
             beam_size=self.beam_size,
-            language=None,
+            language="en",  # English default
             vad_filter=True,
             without_timestamps=True,
             no_speech_threshold=0.4,
@@ -255,14 +263,36 @@ class ASRProcessor:
         whisper_lang = info.language if info.language in ALLOWED_LANGUAGES else "en"
         lang_prob = info.language_probability
 
-        # Override with text-based detection (much more reliable for bilingual)
+        # Text-based language detection — only switch to German if clearly German
         text_lang = _detect_lang_from_text(text)
-        if text_lang != whisper_lang:
-            detected = text_lang
-            print(f"[ASR] {detected.upper()} (text-detect override, whisper said {whisper_lang.upper()} {lang_prob:.0%})")
+        if text_lang == "de":
+            # Re-transcribe with German for better accuracy
+            print(f"[ASR] German detected in text, re-transcribing with lang=de")
+            try:
+                de_segments, de_info = self.model.transcribe(
+                    audio,
+                    beam_size=self.beam_size,
+                    language="de",
+                    vad_filter=True,
+                    without_timestamps=True,
+                    no_speech_threshold=0.4,
+                    log_prob_threshold=-1.0,
+                    condition_on_previous_text=False,
+                )
+                de_parts = []
+                for seg in de_segments:
+                    if seg.no_speech_prob < 0.7:
+                        de_parts.append(seg.text)
+                de_text = " ".join(de_parts).strip()
+                if de_text:
+                    text = de_text
+            except Exception as e:
+                print(f"[ASR] German re-transcribe failed ({e}), using English result")
+            detected = "de"
+            print(f"[ASR] DE (text-detect)")
         else:
-            detected = whisper_lang
-            print(f"[ASR] {detected.upper()} (conf={lang_prob:.0%})")
+            detected = "en"
+            print(f"[ASR] EN (default)")
 
         text = self._filter_text(text)
         return {"text": text, "language": detected, "language_prob": round(lang_prob, 3)}
