@@ -9,8 +9,16 @@ Same async `stream()` interface as the local LLM providers.
 """
 
 import asyncio
+import logging
 import os
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import AsyncIterator, Optional
+
+log = logging.getLogger("s2s.llm")
+
+_pool = ThreadPoolExecutor(max_workers=2)
 
 # No phrase filtering — unrestricted output
 
@@ -53,38 +61,55 @@ class GroqLLM:
         queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
 
         def _generate():
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                try:
+                    stream = self._client.chat.completions.create(
+                        model=self._model,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=0.9,
+                        stream=True,
+                    )
+                    full = ""
+                    for chunk in stream:
+                        delta = chunk.choices[0].delta
+                        if delta and delta.content:
+                            token = delta.content
+                            full += token
+                            loop.call_soon_threadsafe(queue.put_nowait, token)
+
+                    # Store in history
+                    clean = self._clean_response(full)
+                    self._history.append({"role": "user", "content": user_text})
+                    self._history.append({"role": "assistant", "content": clean})
+                    if len(self._history) > 30:
+                        self._history = self._history[-30:]
+                    return  # success
+
+                except Exception as e:
+                    is_rate_limit = "429" in str(e) or "rate" in str(e).lower()
+                    if attempt < max_retries and is_rate_limit:
+                        wait = 1.0 * (2 ** attempt)
+                        log.warning(f"[LLM] Groq rate-limited, retry {attempt+1} in {wait:.0f}s...")
+                        time.sleep(wait)
+                    else:
+                        log.error(f"[LLM] Groq API error: {e}")
+                        return
+            # all retries failed — sentinel sent in finally
+
+        def _generate_wrapper():
             try:
-                stream = self._client.chat.completions.create(
-                    model=self._model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=0.9,
-                    stream=True,
-                )
-                full = ""
-                for chunk in stream:
-                    delta = chunk.choices[0].delta
-                    if delta and delta.content:
-                        token = delta.content
-                        full += token
-                        loop.call_soon_threadsafe(queue.put_nowait, token)
-
-                # Store in history
-                clean = self._clean_response(full)
-                self._history.append({"role": "user", "content": user_text})
-                self._history.append({"role": "assistant", "content": clean})
-                if len(self._history) > 30:
-                    self._history = self._history[-30:]
-
-            except Exception as e:
-                print(f"[LLM] Groq API error: {e}")
+                _generate()
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)
 
-        # Run blocking API call in thread pool
-        loop.run_in_executor(None, _generate)
+        # Fire-and-forget: thread fills queue while we drain it in real-time
+        # Do NOT await — that would block until all tokens are generated
+        _pool.submit(_generate_wrapper)
 
+        # Drain queue as tokens arrive (true streaming)
         while True:
             token = await queue.get()
             if token is None:
@@ -96,8 +121,26 @@ class GroqLLM:
             f"[ASR detected: {lang} — IGNORE this tag. Analyze the user's actual intent.]\n"
             "Apply MIRRORING: match the user's language. If they mix languages, "
             "respond in the dominant one. If they ask about a word's meaning, "
-            "activate TEACHER MODE."
+            "activate TEACHER MODE.\n"
         )
+
+        # Detect teacher mode intent
+        lower = user_text.lower()
+        teacher_triggers = [
+            "what does", "what is", "was bedeutet", "was heißt",
+            "was ist", "what do you mean by", "explain the word",
+            "meaning of", "bedeutung von",
+        ]
+        is_teacher = any(t in lower for t in teacher_triggers)
+        if is_teacher:
+            context_hint += (
+                "[TEACHER MODE ACTIVE] The user is asking about a word. "
+                "Structure your response as: "
+                "1) Explain nuance/feeling in the QUESTION language. "
+                "2) Give 2-3 natural example sentences in the OTHER language. "
+                "3) Brief cultural context in the question language. "
+                "Keep it conversational, not like a textbook."
+            )
 
         sys_msg = f"{self.system_prompt}\n{context_hint}"
         messages = [{"role": "system", "content": sys_msg}]
@@ -108,8 +151,7 @@ class GroqLLM:
 
     @staticmethod
     def _clean_response(text: str) -> str:
-        """Minimal cleanup — preserve full response."""
-        import re
+        """Minimal cleanup -- preserve full response."""
         if not text:
             return "Hmm, I didn't catch that."
 
@@ -118,10 +160,12 @@ class GroqLLM:
         text = re.sub(r'^[-\*]\s*', '', text).strip()
 
         # Ensure it ends with punctuation
+        # Use sentence-boundary regex to avoid cutting at decimals/abbreviations
         if text and text[-1] not in '.!?':
-            last_punct = max(text.rfind('.'), text.rfind('!'), text.rfind('?'))
-            if last_punct > 10:
-                text = text[:last_punct + 1]
+            # Find last sentence-ending punctuation followed by space or end
+            match = list(re.finditer(r'[.!?](?:\s|$)', text))
+            if match and match[-1].start() > 10:
+                text = text[:match[-1].start() + 1]
             else:
                 text = text.rstrip(',;: ') + '.'
 

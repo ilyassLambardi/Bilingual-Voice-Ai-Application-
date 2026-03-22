@@ -21,7 +21,7 @@ A real-time bilingual (English + German) voice conversation AI. Speak naturally 
 ## Tech Stack
 - **ASR**: Whisper large-v3 via Groq API
 - **LLM**: Llama-3.3-70B via Groq API  
-- **TTS**: Silero v3 (English + German)
+- **TTS**: Microsoft Edge Neural TTS (English + German)
 - **VAD**: Silero VAD
 - **Backend**: FastAPI + WebSocket
 - **Frontend**: React + Vite + TailwindCSS

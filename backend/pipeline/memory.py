@@ -6,8 +6,6 @@ context.  Uses lightweight TF-IDF vectors for semantic retrieval
 (no extra model required).
 """
 
-import json
-import math
 import os
 import sqlite3
 from collections import Counter
@@ -27,9 +25,11 @@ class LongTermMemory:
         os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")  # safe for concurrent writes
+        self._conn.execute("PRAGMA busy_timeout=5000")  # wait up to 5s on lock
         self._init_db()
         count = self._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-        print(f"[LTM] Ready — {count} memories in {self._db_path}")
+        print(f"[LTM] Ready -- {count} memories in {self._db_path}")
 
     def _init_db(self):
         self._conn.executescript("""

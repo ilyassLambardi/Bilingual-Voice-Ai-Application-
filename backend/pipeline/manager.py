@@ -12,13 +12,25 @@ talking, we kill TTS output and flush the queues immediately.
 
 import asyncio
 import json
-import sys
+import logging
+import re
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
 import numpy as np
+
+from .vad import VADProcessor
+from .asr import ASRProcessor
+from .llm import LLMProcessor, FallbackLLM
+from .tts import TTSProcessor, _detect_sentence_lang
+from .memory import LongTermMemory
+
+log = logging.getLogger("s2s.pipeline")
+
+# Type alias for the WebSocket send function
+SendFn = Callable[[str | bytes], None]
 
 
 def _safe_print(msg: str):
@@ -28,17 +40,45 @@ def _safe_print(msg: str):
     except UnicodeEncodeError:
         print(msg.encode("ascii", errors="replace").decode(), flush=True)
 
-from .vad import VADProcessor
-from .asr import ASRProcessor
-from .llm import LLMProcessor, FallbackLLM
-from .tts import TTSProcessor, _detect_sentence_lang
-from .memory import LongTermMemory
 
+def _clean_transcript(text: str) -> str:
+    """Clean raw LLM token output for display as final transcript.
 
-# Type alias for the WebSocket send function
-SendFn = Callable[[str | bytes], asyncio.coroutines]
+    Handles: trailing whitespace, missing terminal punctuation,
+    partial sentences from token limit cutoff.
+    """
+    text = text.strip()
+    if not text:
+        return text
+    # Strip leading markdown artifacts
+    text = re.sub(r'^[-\*]\s*', '', text).strip()
+    # Ensure terminal punctuation
+    if text and text[-1] not in '.!?':
+        # Find last clean sentence boundary
+        match = list(re.finditer(r'[.!?](?:\s|$)', text))
+        if match and match[-1].start() > 10:
+            text = text[:match[-1].start() + 1]
+        else:
+            text = text.rstrip(',;: ') + '.'
+    return text
+
 
 _load_pool = ThreadPoolExecutor(max_workers=1)
+
+# Consolidated hallucination set (single source of truth)
+# Only patterns that Whisper hallucinates from silence/noise — NOT valid words
+_HALLUCINATIONS = {
+    "", "the end", "thanks for watching", "thank you for watching",
+    "subtitles by", "amara.org", "...", ".", "..", "huh",
+    "um", "uh", "the", "like and subscribe", "subscribe",
+    "danke schon", "untertitel", "untertitelung",
+    # Common noise-induced German hallucinations
+    "wie geht's die", "wie gehts die", "wie geht es dir",
+    "wie geht's", "wie gehts", "hallo wie geht's",
+    "guten tag", "auf wiedersehen", "bis bald",
+    "vielen dank", "herzlich willkommen",
+    "music", "musik", "applause",
+}
 
 
 class PipelineManager:
@@ -56,15 +96,18 @@ class PipelineManager:
         self._ltm: Optional[LongTermMemory] = None
         self._models_ready = False
 
+        # ── Pipeline lock (prevents concurrent pipeline runs) ─────────
+        self._pipeline_lock = asyncio.Lock()
+
         # ── Interrupt mechanics ───────────────────────────────────────
         self._interrupt = asyncio.Event()
         self._generating = False          # True while LLM+TTS is running
         self._gen_task: Optional[asyncio.Task] = None
         self._interrupt_speech_frames = 0  # consecutive speaking frames during generation
-        self._interrupt_threshold = 12    # need ~384ms sustained speech to interrupt (was 8)
+        self._interrupt_threshold = 6     # ~192ms sustained speech to interrupt (fast response)
 
         # ── Backchanneling (smart: ignore "mhm", "yeah", short affirmations) ──
-        self._backchannel_max_frames = 25   # ~800ms — shorter = affirmation, not interrupt
+        self._backchannel_max_frames = 15   # ~480ms — shorter = affirmation, longer = real interrupt
         self._backchannel_cooldown = 0      # cooldown frames after backchannel detection
 
         # ── Language shift detection ─────────────────────────────────
@@ -78,7 +121,7 @@ class PipelineManager:
         # ── Audio accumulation (merge split speech into one big utterance) ──
         self._audio_buffer: list[np.ndarray] = []   # accumulated audio fragments
         self._accumulation_timer: Optional[asyncio.TimerHandle] = None
-        self._accumulation_delay = 1.8     # seconds of silence before processing
+        self._accumulation_delay = 3.0     # seconds of silence before processing (balance: slow speakers vs responsiveness)
         self._send_fn: Optional[SendFn] = None  # cached for timer callback
 
         # ── Rate limiting (protect Groq free tier: 30 RPM) ──────────────
@@ -96,7 +139,6 @@ class PipelineManager:
 
     def _load_models_sync(self):
         """Synchronous model loading — cloud or local based on config.mode."""
-        import sys
         cfg = self.config
         is_cloud = cfg.mode == "cloud"
         print(f"[Manager] Loading models ({cfg.mode} mode) ...", flush=True)
@@ -173,7 +215,16 @@ class PipelineManager:
 
         # ── TTS ──────────────────────────────────────────────────────
         print(f"[Manager] Step 4/4: TTS ({cfg.tts_engine}) ...", flush=True)
-        if cfg.tts_engine == "xtts":
+        if cfg.tts_engine == "edge":
+            try:
+                from .tts_edge import EdgeTTSProcessor
+                self._tts = EdgeTTSProcessor(
+                    sample_rate=cfg.tts_sample_rate,
+                )
+            except Exception as e:
+                print(f"[Manager] EdgeTTS failed ({e}), falling back to Silero", flush=True)
+                self._tts = TTSProcessor(sample_rate=cfg.tts_sample_rate)
+        elif cfg.tts_engine == "xtts":
             try:
                 from .tts_xtts import XTTSProcessor
                 self._tts = XTTSProcessor(
@@ -208,8 +259,6 @@ class PipelineManager:
             return  # silently drop audio until models are loaded
 
         try:
-            chunk = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-
             is_speaking, utterance = self._vad.process_chunk(
                 np.frombuffer(raw_bytes, dtype=np.int16)
             )
@@ -223,12 +272,13 @@ class PipelineManager:
                     self._interrupt_speech_frames += 1
                     # Only interrupt after sustained speech (not a short "mhm" / "yeah")
                     if self._interrupt_speech_frames >= self._interrupt_threshold:
-                        await self._interrupt_generation(send)
+                        if not self._interrupt.is_set():  # prevent re-interrupt
+                            await self._interrupt_generation(send)
                 else:
                     # Speech just ended — was it short enough to be a backchannel?
                     if 0 < self._interrupt_speech_frames < self._backchannel_max_frames:
                         if self._backchannel_cooldown == 0:
-                            print(f"[VAD] Backchannel detected ({self._interrupt_speech_frames} frames) — not interrupting")
+                            print(f"[VAD] Backchannel detected ({self._interrupt_speech_frames} frames) -- not interrupting")
                             try:
                                 await send(json.dumps({"type": "backchannel"}))
                             except Exception:
@@ -261,12 +311,22 @@ class PipelineManager:
                 # Cancel any pending timer and restart
                 if self._accumulation_timer is not None:
                     self._accumulation_timer.cancel()
-                self._send_fn = send
+                self._send_fn = send  # always use latest send ref
                 loop = asyncio.get_running_loop()
                 self._accumulation_timer = loop.call_later(
                     self._accumulation_delay,
-                    lambda: asyncio.ensure_future(self._flush_accumulated(send))
+                    lambda: asyncio.ensure_future(self._flush_accumulated(self._send_fn))
                 )
+
+            # ── Idle recovery: VAD rejected noise / timed out ──
+            # If VAD is not speaking AND returned no utterance AND
+            # we're in "listening", it means noise was rejected → go idle
+            elif not is_speaking and self.state == "listening":
+                # Check if VAD truly reset (not just a brief silence gap)
+                if not self._vad.is_speaking and not self._audio_buffer:
+                    self.state = "idle"
+                    print("[VAD] Noise rejected — returning to idle")
+                    await send(json.dumps({"type": "state", "state": "idle"}))
         except Exception as e:
             print(f"[Manager] handle_audio_chunk error: {e}")
             traceback.print_exc()
@@ -277,11 +337,16 @@ class PipelineManager:
         """Called after silence timeout — process all buffered audio as one utterance."""
         if not self._audio_buffer:
             return
-        # Safety: never start a second pipeline while one is already running
-        if self._generating:
-            print("[VAD] Flush skipped — pipeline already generating")
-            self._audio_buffer.clear()
+        # Use lock to prevent concurrent pipeline runs (race condition fix)
+        if self._pipeline_lock.locked() or self._generating:
+            print("[VAD] Flush deferred -- pipeline still busy, retrying in 500ms")
             self._accumulation_timer = None
+            # DON'T clear buffer -- preserve user's speech for retry
+            loop = asyncio.get_running_loop()
+            self._accumulation_timer = loop.call_later(
+                0.5,
+                lambda: asyncio.ensure_future(self._flush_accumulated(send))
+            )
             return
         # Concatenate all fragments into one continuous audio
         combined = np.concatenate(self._audio_buffer)
@@ -293,7 +358,7 @@ class PipelineManager:
         # Guard: reject audio that's too short (likely noise, not real speech)
         min_dur = getattr(self.config, "min_audio_duration", 0.6)
         if duration < min_dur:
-            print(f"[VAD] Audio too short ({duration:.2f}s < {min_dur}s) — discarding")
+            print(f"[VAD] Audio too short ({duration:.2f}s < {min_dur}s) -- discarding")
             self.state = "idle"
             await send(json.dumps({"type": "state", "state": "idle"}))
             return
@@ -307,16 +372,17 @@ class PipelineManager:
 
     async def _run_pipeline(self, audio: np.ndarray, send: SendFn):
         """ASR → LLM (streaming) → TTS (sentence-by-sentence)."""
-        self._interrupt.clear()
-        try:
-            await self._run_pipeline_inner(audio, send)
-        except Exception as e:
-            print(f"[Pipeline] ERROR: {e}")
-            traceback.print_exc()
-            self._generating = False
-            self.state = "idle"
-            await send(json.dumps({"type": "state", "state": "idle"}))
-            await send(json.dumps({"type": "error", "message": str(e)}))
+        async with self._pipeline_lock:
+            self._interrupt.clear()
+            try:
+                await self._run_pipeline_inner(audio, send)
+            except Exception as e:
+                print(f"[Pipeline] ERROR: {e}")
+                traceback.print_exc()
+                self._generating = False
+                self.state = "idle"
+                await send(json.dumps({"type": "state", "state": "idle"}))
+                await send(json.dumps({"type": "error", "message": str(e)}))
 
     def _check_rate_limit(self) -> bool:
         """Return True if within rate limit, False if exceeded."""
@@ -333,7 +399,7 @@ class PipelineManager:
 
         # ── Rate limit check ─────────────────────────────────────────
         if not self._check_rate_limit():
-            print("[Manager] Rate limit hit — skipping request")
+            print("[Manager] Rate limit hit -- skipping request")
             await send(json.dumps({
                 "type": "transcript",
                 "role": "assistant",
@@ -354,13 +420,7 @@ class PipelineManager:
         user_text = asr_result["text"]
         lang = asr_result["language"] or "en"
 
-        # Filter empty or hallucinated transcriptions
-        _HALLUCINATIONS = {
-            "", "you", "thank you", "thanks", "bye", "goodbye",
-            "the end", "thanks for watching", "thank you for watching",
-            "subtitles by", "amara.org", "...", ".", "huh",
-            "danke", "tschüss", "untertitel", "untertitelung",
-        }
+        # Filter empty or hallucinated transcriptions (uses module-level set)
         cleaned = user_text.strip().rstrip(".!?,").lower()
         if not cleaned or cleaned in _HALLUCINATIONS or len(cleaned) < 2:
             print(f"[ASR] Rejected hallucination: '{user_text.strip()}'")
@@ -387,7 +447,7 @@ class PipelineManager:
 
         # Detect shift: if last 3 were all one lang and now it's different
         if prev_langs and all(l != lang for l in prev_langs) and len(prev_langs) >= 2:
-            print(f"[Lang] Language shift detected: {prev_langs[-1]} → {lang}")
+            print(f"[Lang] Language shift detected: {prev_langs[-1]} -> {lang}")
             try:
                 await send(json.dumps({
                     "type": "language_shift",
@@ -419,6 +479,29 @@ class PipelineManager:
         if memory_context:
             llm_input = f"{user_text}\n\n(Context from previous conversations:\n{memory_context})"
 
+        # ── Concurrent TTS: LLM pushes sentences, TTS worker synthesizes ──
+        tts_queue: asyncio.Queue = asyncio.Queue()
+
+        async def _tts_worker():
+            """Process sentences from queue in order — runs concurrently with LLM."""
+            while True:
+                item = await tts_queue.get()
+                if item is None:  # sentinel = done
+                    break
+                if self._interrupt.is_set():
+                    continue  # drain remaining items
+                sent_text, sent_lang, sent_idx = item
+                await send(json.dumps({
+                    "type": "partial_transcript",
+                    "role": "assistant",
+                    "text": sent_text,
+                    "language": sent_lang,
+                    "index": sent_idx,
+                }))
+                await self._speak_sentence(sent_text, sent_lang, send)
+
+        tts_task = asyncio.create_task(_tts_worker())
+
         if self._llm is not None:
             async for token in self._llm.stream(
                 llm_input,
@@ -432,97 +515,98 @@ class PipelineManager:
                 sentence_buf += token
                 full_response += token
 
-                # Flush on sentence boundary — shorter chunks = more natural TTS
+                # Flush on sentence boundary — shorter chunks = faster TTS
                 should_flush = False
                 if any(sentence_buf.rstrip().endswith(p) for p in ".?!"):
                     should_flush = True
-                elif len(sentence_buf) > 80 and any(sentence_buf.rstrip().endswith(p) for p in ",;:"):
+                elif len(sentence_buf) > 50 and any(sentence_buf.rstrip().endswith(p) for p in ",;:"):
                     should_flush = True  # break long clauses for natural pacing
 
                 if should_flush:
                     sentence = sentence_buf.strip()
                     sentence_buf = ""
                     sentence_idx += 1
-                    await send(json.dumps({
-                        "type": "partial_transcript",
-                        "role": "assistant",
-                        "text": sentence,
-                        "language": lang,
-                        "index": sentence_idx,
-                    }))
-                    await self._speak_sentence(sentence, lang, send)
+                    await tts_queue.put((sentence, lang, sentence_idx))
 
-                    # Stop after 3 sentences — enough for substantive answers
-                    if sentence_idx >= 3:
+                    # Soft limit: stop after 5 sentences for voice pacing
+                    if sentence_idx >= 5:
                         break
 
-            # Flush remaining text (only if we haven't hit 3 sentences yet)
-            if sentence_buf.strip() and not self._interrupt.is_set() and sentence_idx < 3:
+            # Flush remaining text
+            if sentence_buf.strip() and not self._interrupt.is_set() and sentence_idx < 5:
                 sentence = sentence_buf.strip()
                 sentence_idx += 1
-                await send(json.dumps({
-                    "type": "partial_transcript",
-                    "role": "assistant",
-                    "text": sentence,
-                    "language": lang,
-                    "index": sentence_idx,
-                }))
-                await self._speak_sentence(sentence, lang, send)
+                await tts_queue.put((sentence, lang, sentence_idx))
         else:
             # Echo mode (no LLM available) — repeat back in detected language
             full_response = user_text
-            await send(json.dumps({
-                "type": "partial_transcript",
-                "role": "assistant",
-                "text": full_response,
-                "language": lang,
-                "index": 1,
-            }))
-            await self._speak_sentence(full_response, lang, send)
+            await tts_queue.put((full_response, lang, 1))
+
+        # Signal TTS worker to finish, then wait
+        await tts_queue.put(None)
+        await tts_task
 
         # ── Done ──────────────────────────────────────────────────────
-        # CRITICAL: keep _generating = True until ALL final messages are sent.
-        # Setting it False earlier opens a window where a second pipeline
-        # can start from accumulated noise, causing duplicate/disappearing messages.
         t_total = time.time() - t0
         t_llm_tts = time.time() - t_llm_start
         print(f"[Perf] ASR={t_asr:.1f}s  LLM+TTS={t_llm_tts:.1f}s  TOTAL={t_total:.1f}s")
 
-        if not self._interrupt.is_set():
+        if self._interrupt.is_set():
+            # Interrupted — keep 'listening' state set by _interrupt_generation.
+            # Just release the generating flag so next pipeline can run.
+            print("[Pipeline] Exited gracefully after interrupt")
+            self._generating = False
+        else:
+            # Normal completion — send final transcript and go idle
+            clean_response = _clean_transcript(full_response)
             await send(json.dumps({
                 "type": "transcript",
                 "role": "assistant",
-                "text": full_response,
+                "text": clean_response,
                 "language": lang,
             }))
             await send(json.dumps({"type": "audio_end"}))
 
-        # ── LTM: store conversation exchange ──────────────────────
-        if self._ltm and full_response.strip() and not self._interrupt.is_set():
-            try:
-                self._ltm.store_conversation(user_text, full_response, lang)
-            except Exception:
-                pass
+            # LTM: store conversation exchange
+            if self._ltm and full_response.strip():
+                try:
+                    self._ltm.store_conversation(user_text, full_response, lang)
+                except Exception:
+                    pass
 
-        self.state = "idle"
-        await send(json.dumps({"type": "state", "state": "idle"}))
-        self._generating = False  # NOW safe — all messages sent, state is idle
+            self.state = "idle"
+            await send(json.dumps({"type": "state", "state": "idle"}))
+            self._generating = False
 
     # ── TTS helper ────────────────────────────────────────────────────
 
     async def _speak_sentence(self, text: str, lang: str, send: SendFn):
-        """Synthesise one sentence and stream the PCM bytes."""
+        """Synthesise one sentence and stream the PCM bytes.
+
+        Uses per-sentence language detection so the correct TTS model is
+        used even when the LLM responds in a different language than ASR detected.
+        """
         if self._interrupt.is_set() or not text:
             return
         try:
-            _safe_print(f"[TTS] Synthesizing ({lang}): {text[:60]}...")
-            pcm_bytes = await self._tts.synthesize(text, lang=lang)
+            # Per-sentence language detection overrides ASR hint
+            detected = _detect_sentence_lang(text)
+            if detected != lang:
+                print(f"[TTS] Lang override: ASR={lang} -> sentence={detected} for: {text[:50]}")
+            tts_lang = detected
+            _safe_print(f"[TTS] Synthesizing ({tts_lang}): {text[:60]}...")
+            pcm_bytes = await self._tts.synthesize(text, lang=tts_lang)
             if not pcm_bytes:
                 _safe_print(f"[TTS] Skipped empty audio for: {text[:40]}")
                 return
             print(f"[TTS] Generated {len(pcm_bytes)} bytes")
             if not self._interrupt.is_set():
-                await send(pcm_bytes)   # binary frame
+                # Stream audio in ~100ms chunks for faster time-to-first-audio
+                chunk_size = int(self._tts.get_sample_rate() * 2 * 0.1)  # 100ms of int16
+                for i in range(0, len(pcm_bytes), chunk_size):
+                    if self._interrupt.is_set():
+                        break
+                    await send(pcm_bytes[i:i + chunk_size])
         except Exception as e:
             print(f"[TTS] Error: {e}")
             traceback.print_exc()
@@ -553,29 +637,35 @@ class PipelineManager:
     # ── Interrupt logic ───────────────────────────────────────────────
 
     async def _interrupt_generation(self, send: SendFn):
-        """User spoke while AI was talking → kill everything."""
+        """User spoke while AI was talking → stop AI, start listening to user.
+
+        Sets the interrupt flag so the running pipeline exits gracefully.
+        Does NOT cancel the gen_task — that would orphan the internal TTS
+        worker task and leak audio.  Instead the pipeline checks the flag
+        at every await point and exits within ~100ms.
+        """
         print("[Manager] Interrupted by user!")
         self._interrupt.set()
-        self._generating = False
         self._interrupt_speech_frames = 0
 
-        if self._gen_task and not self._gen_task.done():
-            self._gen_task.cancel()
-            try:
-                await self._gen_task
-            except (asyncio.CancelledError, Exception):
-                pass
-
-        # Clear accumulated audio and cancel pending timer
-        self._audio_buffer.clear()
+        # Cancel pending accumulation timer (but keep audio buffer —
+        # the user's interrupt speech is still being captured by VAD)
         if self._accumulation_timer is not None:
             self._accumulation_timer.cancel()
             self._accumulation_timer = None
 
-        self._vad.reset()
+        # Do NOT reset VAD or clear audio buffer — the user is still speaking.
+        # VAD continues tracking their speech, and when they finish,
+        # the utterance flows through the normal accumulation → pipeline path.
+
+        # Tell frontend to stop playback immediately
         self.state = "listening"
-        await send(json.dumps({"type": "state", "state": "listening"}))
-        await send(json.dumps({"type": "interrupt"}))
+        try:
+            await send(json.dumps({"type": "audio_end"}))
+            await send(json.dumps({"type": "state", "state": "listening"}))
+            await send(json.dumps({"type": "interrupt"}))
+        except Exception:
+            pass
 
     # ── Text chat (skip VAD/ASR) ─────────────────────────────────────
 
@@ -620,14 +710,16 @@ class PipelineManager:
             print(f"[Manager] Text chat error: {e}")
             traceback.print_exc()
         finally:
-            self._generating = False
-            self.state = "idle"
-            await send(json.dumps({"type": "state", "state": "idle"}))
+            if not self._interrupt.is_set():
+                self._generating = False
+                self.state = "idle"
+                await send(json.dumps({"type": "state", "state": "idle"}))
+            else:
+                self._generating = False
 
     async def _run_text_pipeline(self, user_text: str, lang: str, send: SendFn):
-        """LLM → TTS pipeline for typed text input."""
-        import time as _time
-        t0 = _time.time()
+        """LLM → TTS pipeline for typed text input (concurrent TTS)."""
+        t0 = time.time()
 
         self.state = "speaking"
         await send(json.dumps({"type": "state", "state": "speaking"}))
@@ -639,6 +731,25 @@ class PipelineManager:
         full_response = ""
         sentence_buf = ""
         sentence_idx = 0
+
+        # Concurrent TTS queue (same pattern as voice pipeline)
+        tts_queue: asyncio.Queue = asyncio.Queue()
+
+        async def _tts_worker():
+            while True:
+                item = await tts_queue.get()
+                if item is None:
+                    break
+                if self._interrupt.is_set():
+                    continue
+                sent_text, sent_lang, sent_idx = item
+                await send(json.dumps({
+                    "type": "partial_transcript", "role": "assistant",
+                    "text": sent_text, "language": sent_lang, "index": sent_idx,
+                }))
+                await self._speak_sentence(sent_text, sent_lang, send)
+
+        tts_task = asyncio.create_task(_tts_worker())
 
         if self._llm is not None:
             async for token in self._llm.stream(
@@ -655,41 +766,33 @@ class PipelineManager:
                 should_flush = False
                 if any(sentence_buf.rstrip().endswith(p) for p in ".?!"):
                     should_flush = True
-                elif len(sentence_buf) > 80 and any(sentence_buf.rstrip().endswith(p) for p in ",;:"):
+                elif len(sentence_buf) > 50 and any(sentence_buf.rstrip().endswith(p) for p in ",;:"):
                     should_flush = True
 
                 if should_flush:
                     sentence = sentence_buf.strip()
                     sentence_buf = ""
                     sentence_idx += 1
-                    await send(json.dumps({
-                        "type": "partial_transcript", "role": "assistant",
-                        "text": sentence, "language": lang, "index": sentence_idx,
-                    }))
-                    await self._speak_sentence(sentence, lang, send)
-                    if sentence_idx >= 3:
+                    await tts_queue.put((sentence, lang, sentence_idx))
+                    if sentence_idx >= 5:
                         break
 
-            if sentence_buf.strip() and not self._interrupt.is_set() and sentence_idx < 3:
+            if sentence_buf.strip() and not self._interrupt.is_set() and sentence_idx < 5:
                 sentence = sentence_buf.strip()
                 sentence_idx += 1
-                await send(json.dumps({
-                    "type": "partial_transcript", "role": "assistant",
-                    "text": sentence, "language": lang, "index": sentence_idx,
-                }))
-                await self._speak_sentence(sentence, lang, send)
+                await tts_queue.put((sentence, lang, sentence_idx))
         else:
             full_response = f"Echo: {user_text}"
-            await send(json.dumps({
-                "type": "partial_transcript", "role": "assistant",
-                "text": full_response, "language": lang, "index": 1,
-            }))
-            await self._speak_sentence(full_response, lang, send)
+            await tts_queue.put((full_response, lang, 1))
+
+        await tts_queue.put(None)
+        await tts_task
 
         if not self._interrupt.is_set():
+            clean_response = _clean_transcript(full_response)
             await send(json.dumps({
                 "type": "transcript", "role": "assistant",
-                "text": full_response, "language": lang,
+                "text": clean_response, "language": lang,
             }))
             await send(json.dumps({"type": "audio_end"}))
 
@@ -699,8 +802,7 @@ class PipelineManager:
             except Exception:
                 pass
 
-        t_total = _time.time() - t0
-        print(f"[Chat] LLM+TTS={t_total:.1f}s [{lang}]")
+        print(f"[Chat] LLM+TTS={time.time() - t0:.1f}s [{lang}]")
 
     @staticmethod
     def _detect_text_language(text: str) -> str:

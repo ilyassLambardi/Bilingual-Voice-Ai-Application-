@@ -8,6 +8,7 @@ Both expose the same async `stream()` interface.
 """
 
 import asyncio
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -72,13 +73,18 @@ class LLMProcessor:
                 if token:
                     full += token
                     loop.call_soon_threadsafe(queue.put_nowait, token)
-            loop.call_soon_threadsafe(queue.put_nowait, None)
             self._history.append({"role": "user", "content": user_text})
             self._history.append({"role": "assistant", "content": full})
             if len(self._history) > 8:
                 self._history = self._history[-8:]
 
-        _pool.submit(_generate)
+        def _generate_wrapper():
+            try:
+                _generate()
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        _pool.submit(_generate_wrapper)
 
         while True:
             token = await queue.get()
@@ -91,13 +97,44 @@ class LLMProcessor:
             f"[ASR detected: {lang} — IGNORE this tag. Analyze the user's actual intent.]\n"
             "Apply MIRRORING: match the user's language. If they mix languages, "
             "respond in the dominant one. If they ask about a word's meaning, "
-            "activate TEACHER MODE."
+            "activate TEACHER MODE.\n"
         )
+
+        # Detect teacher mode intent
+        lower = user_text.lower()
+        teacher_triggers = [
+            "what does", "what is", "was bedeutet", "was heißt",
+            "was ist", "what do you mean by", "explain the word",
+            "meaning of", "bedeutung von",
+        ]
+        is_teacher = any(t in lower for t in teacher_triggers)
+        if is_teacher:
+            context_hint += (
+                "[TEACHER MODE ACTIVE] The user is asking about a word. "
+                "Structure your response as: "
+                "1) Explain nuance/feeling in the QUESTION language. "
+                "2) Give 2-3 natural example sentences in the OTHER language. "
+                "3) Brief cultural context in the question language. "
+                "Keep it conversational, not like a textbook."
+            )
+
         sys_msg = f"{self.system_prompt}\n\n{context_hint}"
         msgs = [{"role": "system", "content": sys_msg}]
         msgs.extend(self._history[-20:])
         msgs.append({"role": "user", "content": user_text})
         return msgs
+
+    @staticmethod
+    def format_educational_response(word: str, meaning_en: str, examples_de: list[str]) -> str:
+        """Format a Teacher Mode response for word explanation."""
+        response = (
+            f"The word '{word}' is fascinating. In English, it roughly means: {meaning_en}. "
+            f"Here is how you'd actually use it in Germany:\n"
+        )
+        for i, ex in enumerate(examples_de, 1):
+            response += f"{i}. {ex}\n"
+        response += "Does that help you feel the nuance of the word?"
+        return response
 
     def clear_history(self):
         self._history.clear()
@@ -281,8 +318,7 @@ class FallbackLLM:
 
     @staticmethod
     def _clean_response(text: str) -> str:
-        """Minimal cleanup — preserve full response."""
-        import re
+        """Minimal cleanup -- preserve full response."""
         if not text:
             return "Hmm, I didn't catch that."
 
@@ -291,10 +327,11 @@ class FallbackLLM:
         text = re.sub(r'^[-\*]\s*', '', text).strip()
 
         # Ensure it ends with punctuation
+        # Use sentence-boundary regex to avoid cutting at decimals/abbreviations
         if text and text[-1] not in '.!?':
-            last_punct = max(text.rfind('.'), text.rfind('!'), text.rfind('?'))
-            if last_punct > 10:
-                text = text[:last_punct + 1]
+            match = list(re.finditer(r'[.!?](?:\s|$)', text))
+            if match and match[-1].start() > 10:
+                text = text[:match[-1].start() + 1]
             else:
                 text = text.rstrip(',;: ') + '.'
 
@@ -303,7 +340,6 @@ class FallbackLLM:
     @staticmethod
     def _split_sentences(text: str) -> list[str]:
         """Split text into sentences for streaming."""
-        import re
         parts = re.split(r'(?<=[.!?])\s+', text)
         return [p.strip() for p in parts if p.strip()]
 

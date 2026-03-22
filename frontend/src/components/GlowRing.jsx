@@ -1,10 +1,10 @@
 import { motion } from "framer-motion";
 
 const STATE_COLORS = {
-  idle: { inner: "rgba(6,182,212,0.06)", outer: "rgba(6,182,212,0.02)", glow: "rgba(6,182,212,0.08)" },
-  listening: { inner: "rgba(244,114,182,0.12)", outer: "rgba(244,114,182,0.04)", glow: "rgba(244,114,182,0.15)" },
-  thinking: { inner: "rgba(245,158,11,0.1)", outer: "rgba(245,158,11,0.03)", glow: "rgba(245,158,11,0.12)" },
-  speaking: { inner: "rgba(16,185,129,0.1)", outer: "rgba(16,185,129,0.03)", glow: "rgba(16,185,129,0.12)" },
+  idle: { inner: "rgba(6,182,212,0.06)", outer: "rgba(6,182,212,0.02)", glow: "rgba(6,182,212,0.08)", secondary: "rgba(129,140,248,0.04)" },
+  listening: { inner: "rgba(244,114,182,0.12)", outer: "rgba(244,114,182,0.04)", glow: "rgba(244,114,182,0.15)", secondary: "rgba(168,85,247,0.06)" },
+  thinking: { inner: "rgba(245,158,11,0.1)", outer: "rgba(245,158,11,0.03)", glow: "rgba(245,158,11,0.12)", secondary: "rgba(239,68,68,0.04)" },
+  speaking: { inner: "rgba(16,185,129,0.1)", outer: "rgba(16,185,129,0.03)", glow: "rgba(16,185,129,0.12)", secondary: "rgba(6,182,212,0.05)" },
 };
 
 export default function GlowRing({ state = "idle" }) {
@@ -19,7 +19,7 @@ export default function GlowRing({ state = "idle" }) {
         animate={{
           width: isActive ? 240 : 200,
           height: isActive ? 240 : 200,
-          background: `radial-gradient(circle, ${c.outer} 0%, transparent 70%)`,
+          background: `radial-gradient(circle, ${c.outer} 0%, ${c.secondary} 40%, transparent 70%)`,
           opacity: isActive ? 1 : 0.3,
         }}
         transition={{ duration: 1.2, ease: "easeInOut" }}
@@ -76,6 +76,22 @@ export default function GlowRing({ state = "idle" }) {
               boxShadow: `0 0 8px ${c.glow}`,
             }}
           />
+        </motion.div>
+      )}
+
+      {/* Secondary orbiting dot — counter-rotation */}
+      {isActive && (
+        <motion.div
+          className="absolute"
+          animate={{ rotate: -360 }}
+          transition={{ duration: 6, repeat: Infinity, ease: "linear" }}
+          style={{ width: 220, height: 220 }}
+        >
+          <div className="absolute rounded-full" style={{
+            width: 3, height: 3, top: 0, left: "50%", marginLeft: -1.5,
+            background: c.glow,
+            boxShadow: `0 0 6px ${c.glow}`,
+          }} />
         </motion.div>
       )}
     </div>

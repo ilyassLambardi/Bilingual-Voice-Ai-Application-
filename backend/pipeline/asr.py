@@ -12,7 +12,11 @@ from typing import Optional
 
 import numpy as np
 import torch
-import whisper
+
+try:
+    import whisper
+except ImportError:
+    whisper = None  # only needed for local .pt fallback
 
 _pool = ThreadPoolExecutor(max_workers=2)
 
@@ -95,7 +99,7 @@ class ASRProcessor:
                 else:
                     raise
             self._backend = "faster-whisper"
-            print(f"[ASR] Ready — faster-whisper {model_size} on {self._device}.", flush=True)
+            print(f"[ASR] Ready -- faster-whisper {model_size} on {self._device}.", flush=True)
         except Exception as e:
             # Fallback to openai-whisper with local .pt
             print(f"[ASR] faster-whisper failed ({e}), trying local .pt ...", flush=True)
@@ -103,7 +107,7 @@ class ASRProcessor:
             if local_pt:
                 self.model = whisper.load_model(str(local_pt), device=device)
                 self._backend = "whisper"
-                print(f"[ASR] Ready — {local_pt.name} on {device} (openai-whisper).", flush=True)
+                print(f"[ASR] Ready -- {local_pt.name} on {device} (openai-whisper).", flush=True)
             else:
                 raise RuntimeError("No ASR model available")
 

@@ -40,10 +40,12 @@ export default function ChatInput({ onSend, disabled, pipelineState, theme = "da
             transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
             className="flex items-center overflow-hidden rounded-full"
             style={{
-              background: isDark ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.05)",
-              border: isDark ? "1px solid rgba(255,255,255,0.06)" : "1px solid rgba(255,255,255,0.08)",
-              backdropFilter: "blur(12px)",
+              background: isDark ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.04)",
+              border: isDark ? "1px solid rgba(6,182,212,0.1)" : "1px solid rgba(6,182,212,0.12)",
+              backdropFilter: "blur(20px)",
+              WebkitBackdropFilter: "blur(20px)",
               height: 40,
+              boxShadow: "0 4px 20px rgba(0,0,0,0.1), inset 0 1px 0 rgba(255,255,255,0.02)",
             }}
           >
             <input
@@ -75,7 +77,7 @@ export default function ChatInput({ onSend, disabled, pipelineState, theme = "da
                 width: 32, height: 32, marginRight: 4, borderRadius: "50%",
                 border: "none", cursor: text.trim() && !busy ? "pointer" : "default",
                 display: "flex", alignItems: "center", justifyContent: "center",
-                background: text.trim() && !busy ? "rgba(6,182,212,0.15)" : "transparent",
+                background: text.trim() && !busy ? "linear-gradient(135deg, rgba(6,182,212,0.15), rgba(129,140,248,0.1))" : "transparent",
                 transition: "all 0.2s",
               }}
             >
@@ -95,9 +97,10 @@ export default function ChatInput({ onSend, disabled, pipelineState, theme = "da
         style={{
           width: 40, height: 40, borderRadius: "50%",
           border: isDark ? "1px solid rgba(255,255,255,0.06)" : "1px solid rgba(255,255,255,0.08)",
-          background: isDark ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.04)",
+          background: isDark ? "rgba(255,255,255,0.025)" : "rgba(255,255,255,0.035)",
           display: "flex", alignItems: "center", justifyContent: "center",
-          cursor: "pointer", backdropFilter: "blur(8px)",
+          cursor: "pointer", backdropFilter: "blur(12px)",
+          boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
         }}
       >
         {open ? (

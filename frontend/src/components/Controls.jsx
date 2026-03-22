@@ -14,11 +14,12 @@ export default function Controls({
   return (
     <div className="flex flex-col items-center gap-3">
       <div className="flex items-center gap-3 px-3 py-2 rounded-2xl" style={{
-        background: isDark ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.04)",
-        border: isDark ? "1px solid rgba(255,255,255,0.06)" : "1px solid rgba(255,255,255,0.07)",
-        backdropFilter: "blur(20px)",
-        WebkitBackdropFilter: "blur(20px)",
-        transition: "background 0.4s, border-color 0.4s",
+        background: isDark ? "rgba(255,255,255,0.025)" : "rgba(255,255,255,0.035)",
+        border: `1px solid ${micActive ? `${accent}25` : (isDark ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.07)")}`,
+        backdropFilter: "blur(24px)",
+        WebkitBackdropFilter: "blur(24px)",
+        boxShadow: micActive ? `0 0 30px ${accent}08, 0 4px 20px rgba(0,0,0,0.15)` : "0 4px 20px rgba(0,0,0,0.1)",
+        transition: "all 0.6s ease",
       }}>
         <motion.button
           whileTap={{ scale: 0.9 }}
@@ -59,19 +60,20 @@ export default function Controls({
 
           <motion.button
             whileTap={{ scale: 0.88 }}
-            whileHover={{ scale: 1.08 }}
+            whileHover={{ scale: 1.08, boxShadow: `0 0 24px ${accent}30` }}
             onClick={onToggleMic}
             disabled={!connected}
             className="relative rounded-full flex items-center justify-center"
             style={{
               width: 56, height: 56, zIndex: 2,
               background: micActive
-                ? `linear-gradient(135deg, ${accent}22, ${accent}10)`
-                : isDark ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.05)",
+                ? `linear-gradient(135deg, ${accent}18, ${accent}0c)`
+                : isDark ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.04)",
               border: micActive
-                ? `1.5px solid ${accent}55`
-                : isDark ? "1.5px solid rgba(255,255,255,0.08)" : "1.5px solid rgba(255,255,255,0.1)",
+                ? `1.5px solid ${accent}44`
+                : isDark ? "1.5px solid rgba(255,255,255,0.07)" : "1.5px solid rgba(255,255,255,0.09)",
               color: micActive ? "#fff" : (isDark ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.4)"),
+              boxShadow: micActive ? `0 0 20px ${accent}20, inset 0 0 20px ${accent}08` : "none",
               transition: "all 0.5s ease",
               opacity: connected ? 1 : 0.2,
               cursor: connected ? "pointer" : "not-allowed",

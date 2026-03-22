@@ -23,6 +23,7 @@ Server → Client:
 
 import json
 import asyncio
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -35,6 +36,10 @@ import uvicorn
 
 from config import config
 from pipeline.manager import PipelineManager
+
+log = logging.getLogger("s2s")
+
+_MAX_SESSIONS = 10  # connection limit
 
 # Built frontend directory (created by `npm run build` in frontend/)
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -51,18 +56,18 @@ async def lifespan(app: FastAPI):
     global _shared_manager
 
     if config.mode == "local":
-        print("[Startup] Local mode — loading models (this may take a minute) ...")
+        print("[Startup] Local mode -- loading models (this may take a minute) ...")
         _shared_manager = PipelineManager(config)
         await _shared_manager.load_models()
     else:
         # Cloud mode: do a quick preload of VAD + TTS (shared, lightweight)
         # LLM and ASR are API calls, loaded per-session
-        print("[Startup] Cloud mode — preloading VAD + TTS ...")
+        print("[Startup] Cloud mode -- preloading VAD + TTS ...")
         warmup = PipelineManager(config)
         await warmup.load_models()
         _shared_manager = warmup  # keep for sharing TTS cache
 
-    print("[Startup] Ready — accepting connections.")
+    print("[Startup] Ready -- accepting connections.")
     yield
     print("[Shutdown] Cleaning up sessions ...")
     _sessions.clear()
@@ -110,9 +115,14 @@ async def system_info():
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
+    # Connection limit
+    if len(_sessions) >= _MAX_SESSIONS:
+        await ws.close(code=1013, reason="Too many connections")
+        return
+
     await ws.accept()
     session_id = str(uuid.uuid4())[:8]
-    print(f"[WS] Client {session_id} connected.")
+    log.info(f"[WS] Client {session_id} connected.")
 
     # Get or create a session manager
     if config.mode == "cloud":
@@ -121,6 +131,9 @@ async def ws_endpoint(ws: WebSocket):
         _sessions[session_id] = mgr
     else:
         mgr = _shared_manager
+
+    # Create send closure ONCE per connection (not per-chunk)
+    send = _make_send(ws)
 
     await ws.send_text(json.dumps({
         "type": "state",
@@ -133,12 +146,9 @@ async def ws_endpoint(ws: WebSocket):
 
             if "bytes" in message and message["bytes"]:
                 try:
-                    await mgr.handle_audio_chunk(
-                        message["bytes"],
-                        send=_make_send(ws),
-                    )
+                    await mgr.handle_audio_chunk(message["bytes"], send)
                 except Exception as e:
-                    print(f"[WS:{session_id}] Audio error: {e}")
+                    log.error(f"[WS:{session_id}] Audio error: {e}")
 
             elif "text" in message and message["text"]:
                 try:
@@ -148,21 +158,23 @@ async def ws_endpoint(ws: WebSocket):
 
                 msg_type = data.get("type")
                 if msg_type == "clear":
-                    await mgr.clear(_make_send(ws))
+                    await mgr.clear(send)
                 elif msg_type == "chat":
                     text = data.get("text", "").strip()
                     if text:
-                        await mgr.handle_text_chat(text, _make_send(ws))
+                        await mgr.handle_text_chat(text, send)
                 elif msg_type == "config":
-                    _apply_config(data, config)
+                    _apply_session_config(data, mgr)
 
     except WebSocketDisconnect:
-        print(f"[WS:{session_id}] Client disconnected.")
+        log.info(f"[WS:{session_id}] Client disconnected.")
     except Exception as e:
-        print(f"[WS:{session_id}] Error: {e}")
+        log.error(f"[WS:{session_id}] Error: {e}")
     finally:
+        # Cancel any running pipeline tasks to avoid orphaned work
+        await _cleanup_session(mgr)
         _sessions.pop(session_id, None)
-        print(f"[WS:{session_id}] Session ended. Active: {len(_sessions)}")
+        log.info(f"[WS:{session_id}] Session ended. Active: {len(_sessions)}")
 
 
 def _make_send(ws: WebSocket):
@@ -178,12 +190,34 @@ def _make_send(ws: WebSocket):
     return _send
 
 
-def _apply_config(data: dict, cfg):
-    """Apply runtime config overrides from the client."""
+async def _cleanup_session(mgr: PipelineManager):
+    """Cancel running tasks and clean up session resources."""
+    try:
+        if mgr._gen_task and not mgr._gen_task.done():
+            mgr._interrupt.set()
+            mgr._gen_task.cancel()
+            try:
+                await mgr._gen_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        mgr._generating = False
+        mgr._audio_buffer.clear()
+        if mgr._accumulation_timer is not None:
+            mgr._accumulation_timer.cancel()
+            mgr._accumulation_timer = None
+    except Exception as e:
+        log.warning(f"[WS] Cleanup error: {e}")
+
+
+def _apply_session_config(data: dict, mgr: PipelineManager):
+    """Apply runtime config overrides per-session (not global)."""
     if "language" in data:
-        cfg.asr_language = data["language"] if data["language"] != "auto" else None
+        lang = data["language"]
+        mgr.config.asr_language = lang if lang != "auto" else None
     if "vad_threshold" in data:
-        cfg.vad_threshold = float(data["vad_threshold"])
+        val = float(data["vad_threshold"])
+        if 0.1 <= val <= 0.99:  # validate bounds
+            mgr.config.vad_threshold = val
 
 
 # ── Static file serving (production: built React app) ──────────────
@@ -198,7 +232,7 @@ if _STATIC_DIR.exists():
             return FileResponse(file)
         return FileResponse(_STATIC_DIR / "index.html")
 else:
-    print("[Static] No frontend/dist found — run 'npm run build' in frontend/ for production.")
+    print("[Static] No frontend/dist found -- run 'npm run build' in frontend/ for production.")
 
 
 if __name__ == "__main__":

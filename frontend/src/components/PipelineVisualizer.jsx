@@ -49,14 +49,20 @@ export default function PipelineVisualizer({ pipelineState, theme = "dark" }) {
                 overflow: "hidden",
               }}
             >
-              {/* Active pulse */}
+              {/* Active pulse + shimmer */}
               {active && (
-                <motion.div
-                  className="absolute inset-0"
-                  animate={{ opacity: [0.05, 0.12, 0.05] }}
-                  transition={{ duration: 1.5, repeat: Infinity }}
-                  style={{ background: `rgba(${stage.c}, 0.1)` }}
-                />
+                <>
+                  <motion.div
+                    className="absolute inset-0"
+                    animate={{ opacity: [0.05, 0.15, 0.05] }}
+                    transition={{ duration: 1.5, repeat: Infinity }}
+                    style={{ background: `rgba(${stage.c}, 0.1)` }}
+                  />
+                  <div className="absolute inset-0" style={{
+                    background: `linear-gradient(105deg, transparent 35%, rgba(${stage.c}, 0.08) 50%, transparent 65%)`,
+                    animation: "shimmer-sweep 2s ease-in-out infinite",
+                  }} />
+                </>
               )}
               <motion.span
                 animate={{
@@ -76,17 +82,28 @@ export default function PipelineVisualizer({ pipelineState, theme = "dark" }) {
               </motion.span>
             </motion.div>
 
-            {/* Connector line */}
+            {/* Connector line with flow dot */}
             {i < STAGES.length - 1 && (
-              <motion.div
-                animate={{
-                  background: highlight
-                    ? `rgba(${stage.c}, 0.25)`
-                    : isDark ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.06)",
-                }}
-                transition={{ duration: 0.3 }}
-                style={{ width: 8, height: 1.5, borderRadius: 1 }}
-              />
+              <div className="relative" style={{ width: 10, height: 2 }}>
+                <motion.div
+                  animate={{
+                    background: highlight
+                      ? `linear-gradient(to right, rgba(${stage.c}, 0.3), rgba(${STAGES[i+1].c}, 0.3))`
+                      : isDark ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.06)",
+                  }}
+                  transition={{ duration: 0.3 }}
+                  style={{ position: "absolute", inset: 0, borderRadius: 1 }}
+                />
+                {active && (
+                  <motion.div
+                    className="absolute rounded-full"
+                    animate={{ left: ["-20%", "120%"] }}
+                    transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+                    style={{ top: -1, width: 4, height: 4, background: `rgba(${stage.c}, 0.6)`,
+                      boxShadow: `0 0 6px rgba(${stage.c}, 0.4)` }}
+                  />
+                )}
+              </div>
             )}
           </div>
         );

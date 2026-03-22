@@ -183,30 +183,30 @@ const STATE_PARAMS = {
   idle: {
     color1: [0.02, 0.71, 0.83],
     color2: [0.05, 0.55, 0.72],
-    color3: [0.39, 0.4, 0.95],     // indigo iridescence
+    color3: [0.5, 0.55, 0.97],      // vibrant indigo iridescence
     noiseFreq: 1.5, noiseAmp: 0.08, speed: 0.3,
-    glow: 0.6, pulseSpeed: 2.0, pulseAmp: 0.3,
+    glow: 0.65, pulseSpeed: 2.0, pulseAmp: 0.3,
   },
   listening: {
     color1: [0.96, 0.45, 0.71],
     color2: [0.93, 0.28, 0.60],
-    color3: [0.66, 0.33, 0.97],     // purple iridescence
+    color3: [0.72, 0.38, 0.98],     // rich purple iridescence
     noiseFreq: 4.0, noiseAmp: 0.15, speed: 1.2,
-    glow: 1.0, pulseSpeed: 6.0, pulseAmp: 0.5,
+    glow: 1.1, pulseSpeed: 6.0, pulseAmp: 0.5,
   },
   thinking: {
     color1: [0.96, 0.62, 0.04],
-    color2: [0.85, 0.47, 0.02],
-    color3: [0.98, 0.35, 0.15],     // orange-red iridescence
+    color2: [0.88, 0.5, 0.05],
+    color3: [0.98, 0.38, 0.18],     // vivid orange-red iridescence
     noiseFreq: 2.5, noiseAmp: 0.12, speed: 0.8,
-    glow: 0.8, pulseSpeed: 3.0, pulseAmp: 0.4, rotateSpeed: 1.5,
+    glow: 0.85, pulseSpeed: 3.0, pulseAmp: 0.4, rotateSpeed: 1.5,
   },
   speaking: {
     color1: [0.06, 0.73, 0.51],
-    color2: [0.02, 0.59, 0.41],
-    color3: [0.2, 0.83, 0.75],      // teal iridescence
+    color2: [0.04, 0.62, 0.45],
+    color3: [0.25, 0.85, 0.78],     // bright teal iridescence
     noiseFreq: 2.0, noiseAmp: 0.10, speed: 0.6,
-    glow: 0.9, pulseSpeed: 4.0, pulseAmp: 0.8,
+    glow: 0.95, pulseSpeed: 4.0, pulseAmp: 0.8,
   },
 };
 
@@ -412,13 +412,13 @@ export default function FluidOrb({ state = "idle", lang = "en" }) {
       <div style={{
         width: 220, height: 220,
         filter: state === "speaking"
-          ? "brightness(1.15) contrast(1.05) saturate(1.2) drop-shadow(0 0 18px rgba(16,185,129,0.35))"
+          ? "brightness(1.18) contrast(1.06) saturate(1.25) drop-shadow(0 0 20px rgba(16,185,129,0.3)) drop-shadow(0 0 40px rgba(6,182,212,0.12))"
           : state === "listening"
-            ? "brightness(1.1) saturate(1.15) drop-shadow(0 0 14px rgba(244,114,182,0.3))"
+            ? "brightness(1.12) saturate(1.2) drop-shadow(0 0 16px rgba(244,114,182,0.28)) drop-shadow(0 0 36px rgba(168,85,247,0.1))"
             : state === "thinking"
-              ? "brightness(1.05) contrast(1.08) hue-rotate(3deg) drop-shadow(0 0 12px rgba(245,158,11,0.25))"
-              : "brightness(1.0) drop-shadow(0 0 8px rgba(6,182,212,0.15))",
-        transition: "filter 0.8s ease",
+              ? "brightness(1.08) contrast(1.08) hue-rotate(2deg) drop-shadow(0 0 14px rgba(245,158,11,0.25)) drop-shadow(0 0 30px rgba(239,68,68,0.08))"
+              : "brightness(1.02) drop-shadow(0 0 10px rgba(6,182,212,0.12)) drop-shadow(0 0 25px rgba(129,140,248,0.06))",
+        transition: "filter 1s ease",
       }}>
         <Canvas
           camera={{ position: [0, 0, 2.8], fov: 45 }}

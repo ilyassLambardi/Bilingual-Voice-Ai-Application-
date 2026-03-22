@@ -27,3 +27,5 @@ sentencepiece>=0.1.99
 
 # ── TTS / VAD (always local — lightweight) ──────────────
 # Silero TTS + VAD loaded via torch.hub or local .pt/.jit files
+edge-tts>=7.0.0                    # Microsoft Edge Neural TTS (cloud, free)
+imageio-ffmpeg>=0.5.1              # Bundled ffmpeg for MP3->PCM decoding

@@ -43,12 +43,12 @@ function MsgBubble({ msg, isDark }) {
         borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
         fontSize: 13, lineHeight: 1.65,
         background: isUser
-          ? isDark ? "linear-gradient(135deg, rgba(6,182,212,0.08), rgba(14,116,144,0.04))"
-                   : "linear-gradient(135deg, rgba(6,182,212,0.12), rgba(14,116,144,0.06))"
+          ? isDark ? "linear-gradient(135deg, rgba(6,182,212,0.08), rgba(129,140,248,0.04))"
+                   : "linear-gradient(135deg, rgba(6,182,212,0.12), rgba(129,140,248,0.06))"
           : msg.language === "de"
             ? isDark ? "linear-gradient(135deg, rgba(245,158,11,0.04), rgba(217,119,6,0.02))"
                      : "linear-gradient(135deg, rgba(245,158,11,0.06), rgba(217,119,6,0.03))"
-            : isDark ? "rgba(255,255,255,0.025)" : "rgba(255,255,255,0.03)",
+            : isDark ? "linear-gradient(135deg, rgba(255,255,255,0.025), rgba(129,140,248,0.01))" : "linear-gradient(135deg, rgba(255,255,255,0.03), rgba(129,140,248,0.015))",
         color: isUser
           ? isDark ? "rgba(255,255,255,0.8)" : "rgba(255,255,255,0.85)"
           : isDark ? "rgba(255,255,255,0.65)" : "rgba(255,255,255,0.7)",
@@ -203,11 +203,14 @@ export default function TranscriptWindow({ messages = [], ghostText = "", isList
     <div className="relative">
       <div ref={scrollRef} onScroll={handleScroll} className="rounded-xl" style={{
         maxHeight: 190, overflowY: "auto", padding: "10px 12px",
-        background: isDark ? "rgba(255,255,255,0.015)" : "rgba(255,255,255,0.025)",
-        border: isDark ? "1px solid rgba(255,255,255,0.04)" : "1px solid rgba(255,255,255,0.05)",
-        backdropFilter: "blur(12px)",
-        WebkitBackdropFilter: "blur(12px)",
-        transition: "background 0.4s, border-color 0.4s",
+        background: isDark
+          ? "linear-gradient(135deg, rgba(255,255,255,0.015), rgba(6,182,212,0.008))"
+          : "linear-gradient(135deg, rgba(255,255,255,0.025), rgba(6,182,212,0.012))",
+        border: isDark ? "1px solid rgba(255,255,255,0.05)" : "1px solid rgba(255,255,255,0.06)",
+        backdropFilter: "blur(16px)",
+        WebkitBackdropFilter: "blur(16px)",
+        boxShadow: "0 4px 24px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.02)",
+        transition: "background 0.6s, border-color 0.6s",
       }}>
         <AnimatePresence initial={false}>
           {visible.map((msg, i) => (
