@@ -87,7 +87,7 @@ def main():
         repo_id=REPO_ID,
         repo_type=REPO_TYPE,
         folder_path=str(stage),
-        commit_message="Deploy: Noise cancellation VAD, redesigned UI, EdgeTTS, full pipeline",
+        commit_message="Deploy: ASR hallucination fixes, interrupt behavior, noise cancellation, full pipeline",
         delete_patterns=["*"],  # remove old files not in this upload
     )
 
