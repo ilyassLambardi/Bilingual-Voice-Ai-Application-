@@ -68,29 +68,43 @@ def _audio_to_wav_bytes(audio: np.ndarray, sample_rate: int = 16000) -> bytes:
     return buf.getvalue()
 
 
-# Common hallucination patterns (lowercased, stripped form)
+# ── Consolidated hallucination patterns (lowercased, stripped) ──────────
 _HALLUCINATIONS = {
-    "thank you", "thanks for watching", "subscribe",
-    "like and subscribe", "bye", "you", "the",
-    "um", "uh",
-    "thanks", "thank you for watching",
-    "danke", "danke schön", "tschüss",
-    # Common noise-induced German hallucinations from Whisper
+    # English Whisper noise hallucinations
+    "thank you", "thanks", "thanks for watching", "thank you for watching",
+    "subscribe", "like and subscribe", "like subscribe",
+    "please subscribe", "hit the bell",
+    "bye", "goodbye", "you", "the", "the end",
+    "um", "uh", "hmm", "huh",
+    "oh", "ah",
+    "subtitles by", "amara.org", "subtitles made by",
+    "copyright", "all rights reserved",
+    "music", "applause", "laughter",
+    # German Whisper noise hallucinations
+    "danke", "danke schön", "danke schon", "tschüss", "tschuss",
     "wie geht's die", "wie gehts die", "wie geht es dir",
     "wie geht's", "wie gehts", "hallo wie geht's",
     "guten tag", "auf wiedersehen", "bis bald",
     "vielen dank", "herzlich willkommen",
-    "untertitel von", "untertitelung",
-    "subtitles by", "amara.org",
-    "copyright", "all rights reserved",
-    "music", "musik", "applause",
+    "untertitel von", "untertitelung", "untertitel",
+    "musik",
 }
+
+# Substrings that indicate hallucination (catches partial matches)
+_HALLUCINATION_SUBSTRINGS = [
+    "thanks for watching", "thank you for watching",
+    "subscribe", "subtitles by", "amara.org",
+    "untertitel", "copyright",
+    "please like", "hit the bell",
+]
 
 # Short words that are valid conversational input (never filter these)
 _VALID_SHORT = {
     "yes", "no", "ok", "okay", "hi", "hey", "why", "how",
+    "what", "when", "who", "where", "help", "stop", "go",
     "ja", "nein", "gut", "naja", "ach", "doch", "klar",
     "wow", "cool", "nice", "sure", "fine", "yep", "nah",
+    "hallo", "hello", "bitte", "genau",
 }
 
 
@@ -121,20 +135,47 @@ class GroqASR:
 
     def _transcribe_sync(self, audio: np.ndarray) -> dict:
         """Synchronous transcription via Groq API with retry."""
+        # ── Pre-check: reject audio that's too short or too quiet ──
+        duration = len(audio) / 16000.0
+        if duration < 0.3:
+            log.info(f"[ASR] Audio too short ({duration:.2f}s), skipping")
+            return {"text": "", "language": "en", "language_prob": 0.0}
+
+        rms = float(np.sqrt(np.mean(audio ** 2)))
+        if rms < 0.003:
+            log.info(f"[ASR] Audio too quiet (RMS={rms:.4f}), skipping")
+            return {"text": "", "language": "en", "language_prob": 0.0}
+
         wav_bytes = _audio_to_wav_bytes(audio, sample_rate=16000)
         max_retries = 2
 
         for attempt in range(max_retries + 1):
             try:
+                # No prompt — avoids Whisper hallucinating the prompt itself
                 transcription = self._client.audio.transcriptions.create(
                     file=("audio.wav", wav_bytes),
                     model=self._model,
                     language=None,  # auto-detect
                     response_format="verbose_json",
-                    prompt="Hello, how are you? Hallo, wie geht es dir?",
                 )
 
-                text = transcription.text.strip() if transcription.text else ""
+                # ── Parse segments for no_speech_prob filtering ──
+                segments = getattr(transcription, 'segments', None)
+                if segments and isinstance(segments, list):
+                    # Filter out segments with high no_speech_prob
+                    good_parts = []
+                    for seg in segments:
+                        nsp = getattr(seg, 'no_speech_prob', 0.0)
+                        seg_text = getattr(seg, 'text', '').strip()
+                        if nsp < 0.6 and seg_text:
+                            good_parts.append(seg_text)
+                        else:
+                            log.info(f"[ASR] Dropped segment (no_speech={nsp:.2f}): '{seg_text}'")
+                    text = " ".join(good_parts).strip()
+                else:
+                    # Fallback: use full text
+                    text = transcription.text.strip() if transcription.text else ""
+
                 api_lang = getattr(transcription, 'language', 'en') or 'en'
 
                 if api_lang not in ALLOWED_LANGUAGES:
@@ -170,33 +211,56 @@ class GroqASR:
 
     @staticmethod
     def _filter_text(text: str) -> str:
-        """Filter hallucinations and noise."""
+        """Filter hallucinations and noise — aggressive but safe."""
         raw_lower = text.lower().strip()
-        # Catch pure punctuation / dots that strip() alone won't handle
-        if not raw_lower or all(ch in '., !?…' for ch in raw_lower):
+
+        # Catch pure punctuation / dots
+        if not raw_lower or all(ch in '., !?…-–—' for ch in raw_lower):
             log.info(f"[ASR] Filtered noise/punctuation: '{text}'")
             return ""
-        cleaned = raw_lower.strip("., !?")
+
+        cleaned = raw_lower.strip("., !?…-–—")
         if not cleaned:
             log.info(f"[ASR] Filtered empty after strip: '{text}'")
             return ""
+
+        # Exact hallucination match
         if cleaned in _HALLUCINATIONS:
             log.info(f"[ASR] Filtered hallucination: '{text}'")
             return ""
-        # Check if text STARTS with a known hallucination phrase
-        for h in _HALLUCINATIONS:
-            if h and len(h) > 3 and cleaned.startswith(h):
-                log.info(f"[ASR] Filtered hallucination prefix: '{text}'")
+
+        # Substring hallucination match (catches "Thanks for watching everyone!")
+        for sub in _HALLUCINATION_SUBSTRINGS:
+            if sub in cleaned:
+                log.info(f"[ASR] Filtered hallucination substring '{sub}' in: '{text}'")
                 return ""
-        # Repetition detection: noise often produces repeated words
+
+        # Repetition detection: noise produces "Thank you. Thank you. Thank you."
         words = cleaned.split()
         if len(words) >= 3:
             unique = set(words)
+            # All same word
             if len(unique) == 1:
                 log.info(f"[ASR] Filtered repetition: '{text}'")
                 return ""
+            # Mostly same word (>70%)
+            from collections import Counter
+            most_common_count = Counter(words).most_common(1)[0][1]
+            if most_common_count / len(words) > 0.7:
+                log.info(f"[ASR] Filtered dominant repetition: '{text}'")
+                return ""
+
+        # Repeated sentence pattern: "Thank you. Thank you."
+        sentences = [s.strip().strip('.,!?').lower() for s in text.split('.') if s.strip()]
+        if len(sentences) >= 2:
+            unique_sentences = set(sentences)
+            if len(unique_sentences) == 1 and sentences[0] in _HALLUCINATIONS:
+                log.info(f"[ASR] Filtered repeated hallucination sentence: '{text}'")
+                return ""
+
         # Too-short filter: block ≤2 char single words UNLESS they're known valid
         if len(words) == 1 and len(cleaned) <= 2 and cleaned not in _VALID_SHORT:
             log.info(f"[ASR] Filtered too-short: '{text}'")
             return ""
+
         return text

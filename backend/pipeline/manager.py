@@ -68,17 +68,32 @@ _load_pool = ThreadPoolExecutor(max_workers=1)
 # Consolidated hallucination set (single source of truth)
 # Only patterns that Whisper hallucinates from silence/noise — NOT valid words
 _HALLUCINATIONS = {
-    "", "the end", "thanks for watching", "thank you for watching",
-    "subtitles by", "amara.org", "...", ".", "..", "huh",
-    "um", "uh", "the", "like and subscribe", "subscribe",
-    "danke schon", "untertitel", "untertitelung",
-    # Common noise-induced German hallucinations
+    "", ".", "..", "...",
+    # English
+    "thank you", "thanks", "thanks for watching", "thank you for watching",
+    "subscribe", "like and subscribe", "like subscribe",
+    "please subscribe", "hit the bell",
+    "bye", "goodbye", "you", "the", "the end",
+    "um", "uh", "hmm", "huh", "oh", "ah",
+    "subtitles by", "amara.org", "subtitles made by",
+    "copyright", "all rights reserved",
+    "music", "applause", "laughter",
+    # German
+    "danke", "danke schön", "danke schon", "tschüss", "tschuss",
     "wie geht's die", "wie gehts die", "wie geht es dir",
     "wie geht's", "wie gehts", "hallo wie geht's",
     "guten tag", "auf wiedersehen", "bis bald",
     "vielen dank", "herzlich willkommen",
-    "music", "musik", "applause",
+    "untertitel von", "untertitelung", "untertitel",
+    "musik",
 }
+
+_HALLUCINATION_SUBSTRINGS = [
+    "thanks for watching", "thank you for watching",
+    "subscribe", "subtitles by", "amara.org",
+    "untertitel", "copyright",
+    "please like", "hit the bell",
+]
 
 
 class PipelineManager:
@@ -99,15 +114,15 @@ class PipelineManager:
         # ── Pipeline lock (prevents concurrent pipeline runs) ─────────
         self._pipeline_lock = asyncio.Lock()
 
-        # ── Interrupt mechanics ───────────────────────────────────────
+        # ── Interrupt mechanics ───────────────────────────────
         self._interrupt = asyncio.Event()
         self._generating = False          # True while LLM+TTS is running
         self._gen_task: Optional[asyncio.Task] = None
         self._interrupt_speech_frames = 0  # consecutive speaking frames during generation
-        self._interrupt_threshold = 6     # ~192ms sustained speech to interrupt (fast response)
+        self._interrupt_threshold = 4     # ~128ms sustained speech to interrupt (fast response)
 
         # ── Backchanneling (smart: ignore "mhm", "yeah", short affirmations) ──
-        self._backchannel_max_frames = 15   # ~480ms — shorter = affirmation, longer = real interrupt
+        self._backchannel_max_frames = 12   # ~384ms — shorter = affirmation, longer = real interrupt
         self._backchannel_cooldown = 0      # cooldown frames after backchannel detection
 
         # ── Language shift detection ─────────────────────────────────
@@ -263,7 +278,7 @@ class PipelineManager:
                 np.frombuffer(raw_bytes, dtype=np.int16)
             )
 
-            # ── Interrupt with backchanneling ──────────────────────────
+            # ── Interrupt with backchanneling ──────────────────────
             if self._generating:
                 if self._backchannel_cooldown > 0:
                     self._backchannel_cooldown -= 1
@@ -285,10 +300,14 @@ class PipelineManager:
                                 pass
                             self._backchannel_cooldown = 30  # ~1s cooldown
                     self._interrupt_speech_frames = 0
-                # CRITICAL: while generating, do NOT change state or accumulate
-                # utterances — only handle interrupt/backchannel above.
-                # This prevents _flush_accumulated from running concurrently
-                # with the active pipeline, which causes message corruption.
+
+                # ── KEY FIX: accumulate utterances during interrupt ──
+                # Don't drop user speech that completes while AI is still winding down.
+                # This audio will be processed after the pipeline exits.
+                if utterance is not None and self._interrupt.is_set():
+                    self._audio_buffer.append(utterance)
+                    total = sum(len(a) for a in self._audio_buffer)
+                    print(f"[VAD] Interrupt speech buffered: {len(utterance)} samples (total: {total})")
                 return
 
             if is_speaking and self.state != "listening":
@@ -420,9 +439,15 @@ class PipelineManager:
         user_text = asr_result["text"]
         lang = asr_result["language"] or "en"
 
-        # Filter empty or hallucinated transcriptions (uses module-level set)
+        # Filter empty or hallucinated transcriptions (secondary safety net)
         cleaned = user_text.strip().rstrip(".!?,").lower()
-        if not cleaned or cleaned in _HALLUCINATIONS or len(cleaned) < 2:
+        is_hallucination = (
+            not cleaned
+            or cleaned in _HALLUCINATIONS
+            or len(cleaned) < 2
+            or any(sub in cleaned for sub in _HALLUCINATION_SUBSTRINGS)
+        )
+        if is_hallucination:
             print(f"[ASR] Rejected hallucination: '{user_text.strip()}'")
             self.state = "idle"
             await send(json.dumps({"type": "state", "state": "idle"}))
@@ -552,10 +577,23 @@ class PipelineManager:
         print(f"[Perf] ASR={t_asr:.1f}s  LLM+TTS={t_llm_tts:.1f}s  TOTAL={t_total:.1f}s")
 
         if self._interrupt.is_set():
-            # Interrupted — keep 'listening' state set by _interrupt_generation.
-            # Just release the generating flag so next pipeline can run.
+            # Interrupted — release generating flag so new audio can be processed.
             print("[Pipeline] Exited gracefully after interrupt")
             self._generating = False
+            # Schedule processing of any audio buffered during the interrupt
+            if self._audio_buffer:
+                total = sum(len(a) for a in self._audio_buffer)
+                print(f"[Pipeline] Post-interrupt: {len(self._audio_buffer)} fragment(s), {total} samples queued")
+                self._send_fn = send
+                loop = asyncio.get_running_loop()
+                self._accumulation_timer = loop.call_later(
+                    1.5,  # short delay — give user time to finish speaking
+                    lambda: asyncio.ensure_future(self._flush_accumulated(self._send_fn))
+                )
+            else:
+                # No buffered audio — user may still be speaking, stay listening
+                # VAD will transition to idle naturally when noise subsides
+                pass
         else:
             # Normal completion — send final transcript and go idle
             clean_response = _clean_transcript(full_response)
@@ -637,26 +675,25 @@ class PipelineManager:
     # ── Interrupt logic ───────────────────────────────────────────────
 
     async def _interrupt_generation(self, send: SendFn):
-        """User spoke while AI was talking → stop AI, start listening to user.
+        """User spoke while AI was talking → stop AI immediately, start listening.
 
         Sets the interrupt flag so the running pipeline exits gracefully.
         Does NOT cancel the gen_task — that would orphan the internal TTS
         worker task and leak audio.  Instead the pipeline checks the flag
         at every await point and exits within ~100ms.
         """
-        print("[Manager] Interrupted by user!")
+        print("[Manager] ⚡ Interrupted by user! Stopping AI speech.")
         self._interrupt.set()
         self._interrupt_speech_frames = 0
 
-        # Cancel pending accumulation timer (but keep audio buffer —
-        # the user's interrupt speech is still being captured by VAD)
+        # Cancel pending accumulation timer (user is still talking)
         if self._accumulation_timer is not None:
             self._accumulation_timer.cancel()
             self._accumulation_timer = None
 
         # Do NOT reset VAD or clear audio buffer — the user is still speaking.
-        # VAD continues tracking their speech, and when they finish,
-        # the utterance flows through the normal accumulation → pipeline path.
+        # VAD continues tracking their speech. Completed utterances are now
+        # accumulated in handle_audio_chunk (the KEY FIX above).
 
         # Tell frontend to stop playback immediately
         self.state = "listening"
