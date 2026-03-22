@@ -87,7 +87,7 @@ def main():
         repo_id=REPO_ID,
         repo_type=REPO_TYPE,
         folder_path=str(stage),
-        commit_message="Deploy: Full pipeline audit fixes — VAD hangover, pipeline timeout, config validation, English-first",
+        commit_message="Deploy: Full diagnosis — fix stale closures, session cleanup, TTS sample rate, clear() reset, playback gain",
         delete_patterns=["*"],  # remove old files not in this upload
     )
 

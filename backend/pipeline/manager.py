@@ -933,7 +933,18 @@ class PipelineManager:
             self._llm.clear_history()
         if self._vad:
             self._vad.reset()
+        # Cancel any pending accumulation timer
+        if self._accumulation_timer is not None:
+            self._accumulation_timer.cancel()
+            self._accumulation_timer = None
+        # Clear all buffered audio
+        self._audio_buffer.clear()
+        # Reset language history
+        self._lang_history.clear()
+        # Reset interrupt and generation state
         self._generating = False
         self._interrupt.clear()
+        self._interrupt_speech_frames = 0
+        self._backchannel_cooldown = 0
         self.state = "idle"
-        await send(json.dumps({"type": "state", "state": "idle"}))
+        await send(build_state_message("idle"))

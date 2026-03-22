@@ -193,18 +193,34 @@ async def ws_endpoint(ws: WebSocket):
 async def _cleanup_session(mgr: PipelineManager):
     """Cancel running tasks and clean up session resources."""
     try:
-        if mgr._gen_task and not mgr._gen_task.done():
+        # Cancel running generation task
+        gen_task = getattr(mgr, '_gen_task', None)
+        if gen_task and not gen_task.done():
             mgr._interrupt.set()
-            mgr._gen_task.cancel()
+            gen_task.cancel()
             try:
-                await mgr._gen_task
+                await gen_task
             except (asyncio.CancelledError, Exception):
                 pass
         mgr._generating = False
-        mgr._audio_buffer.clear()
-        if mgr._accumulation_timer is not None:
-            mgr._accumulation_timer.cancel()
+
+        # Cancel accumulation timer
+        timer = getattr(mgr, '_accumulation_timer', None)
+        if timer is not None:
+            timer.cancel()
             mgr._accumulation_timer = None
+
+        # Clear audio buffer
+        if hasattr(mgr, '_audio_buffer'):
+            mgr._audio_buffer.clear()
+
+        # Close LTM connection to prevent SQLite leaks
+        ltm = getattr(mgr, '_ltm', None)
+        if ltm:
+            try:
+                ltm.close()
+            except Exception:
+                pass
     except Exception as e:
         log.warning(f"[WS] Cleanup error: {e}")
 

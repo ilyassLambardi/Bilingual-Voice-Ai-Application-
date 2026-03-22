@@ -124,6 +124,10 @@ if config.mode == "cloud" and (not config.groq_api_key or config.groq_api_key.st
     print("[Config] WARNING: GROQ_API_KEY not set — cloud mode will fail")
 if config.tts_sample_rate not in (16000, 22050, 24000, 44100, 48000):
     _errors.append(f"tts_sample_rate={config.tts_sample_rate} is unusual")
+if not 50 <= config.llm_max_tokens <= 2000:
+    _errors.append(f"llm_max_tokens={config.llm_max_tokens} out of range [50, 2000]")
+if not 0.1 <= config.min_audio_duration <= 5.0:
+    _errors.append(f"min_audio_duration={config.min_audio_duration} out of range [0.1, 5.0]")
 if _errors:
     for e in _errors:
         print(f"[Config] ERROR: {e}")

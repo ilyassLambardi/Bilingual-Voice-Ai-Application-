@@ -18,6 +18,13 @@ export default function useWebSocket({ onAudio, onTranscript, onStateChange, onG
   const [connected, setConnected] = useState(false);
   const [pipelineState, setPipelineState] = useState("idle");
 
+  // Store callbacks in refs so WebSocket handler always sees latest versions
+  // (avoids stale closure bug where ws.onmessage captures old callbacks)
+  const cbRef = useRef({ onAudio, onTranscript, onStateChange, onGhostText, onBackchannel });
+  useEffect(() => {
+    cbRef.current = { onAudio, onTranscript, onStateChange, onGhostText, onBackchannel };
+  }, [onAudio, onTranscript, onStateChange, onGhostText, onBackchannel]);
+
   // ── Connect ──────────────────────────────────────────────
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -54,14 +61,42 @@ export default function useWebSocket({ onAudio, onTranscript, onStateChange, onG
     };
 
     ws.onmessage = (event) => {
+      const cb = cbRef.current;
       if (event.data instanceof ArrayBuffer) {
-        // Binary = PCM audio from TTS
-        onAudio?.(event.data);
+        cb.onAudio?.(event.data);
       } else {
-        // JSON control message
         try {
           const msg = JSON.parse(event.data);
-          _handleMessage(msg);
+          switch (msg.type) {
+            case "state":
+              setPipelineState(msg.state);
+              cb.onStateChange?.(msg.state);
+              break;
+            case "transcript":
+            case "partial_transcript":
+              cb.onTranscript?.(msg);
+              break;
+            case "audio_config":
+              window.__tts_sample_rate = msg.sample_rate || 24000;
+              break;
+            case "audio_end":
+              break;
+            case "ghost_text":
+              cb.onGhostText?.(msg.text);
+              break;
+            case "interrupt":
+              cb.onGhostText?.("");
+              if (window.__stopPlayback) window.__stopPlayback();
+              break;
+            case "backchannel":
+              cb.onBackchannel?.();
+              break;
+            case "error":
+              console.warn("[WS] Server error:", msg.message);
+              break;
+            default:
+              break;
+          }
         } catch {
           // ignore malformed
         }
@@ -69,47 +104,7 @@ export default function useWebSocket({ onAudio, onTranscript, onStateChange, onG
     };
 
     wsRef.current = ws;
-  }, [onAudio, onTranscript, onStateChange, onGhostText]);
-
-  function _handleMessage(msg) {
-    switch (msg.type) {
-      case "state":
-        setPipelineState(msg.state);
-        onStateChange?.(msg.state);
-        break;
-      case "transcript":
-        onTranscript?.(msg);
-        break;
-      case "partial_transcript":
-        onTranscript?.(msg);
-        break;
-      case "audio_config":
-        // Store sample rate for playback
-        window.__tts_sample_rate = msg.sample_rate || 24000;
-        break;
-      case "audio_end":
-        // Could trigger end-of-playback UI
-        break;
-      case "ghost_text":
-        onGhostText?.(msg.text);
-        break;
-      case "interrupt":
-        // AI was interrupted by user speaking — stop audio playback
-        onGhostText?.("");
-        if (window.__stopPlayback) window.__stopPlayback();
-        break;
-      case "backchannel":
-        // User made a short affirmation (mhm, yeah) — visual pulse, no interrupt
-        onBackchannel?.();
-        break;
-      case "language_shift":
-        // User switched languages (e.g. EN→DE after 3 EN messages)
-        onStateChange?.("language_shift:" + msg.from + ":" + msg.to);
-        break;
-      default:
-        break;
-    }
-  }
+  }, []);  // no deps needed — callbacks accessed via cbRef
 
   // ── Send binary audio chunk ──────────────────────────────
   const sendAudio = useCallback((buffer) => {

@@ -160,7 +160,7 @@ def _apply_intonation(pcm: np.ndarray, text: str, sample_rate: int = 24000) -> n
     return np.clip(pcm_f, -32767, 32767).astype(np.int16)
 
 
-def _apply_warmth(pcm: np.ndarray, sample_rate: int = 48000) -> np.ndarray:
+def _apply_warmth(pcm: np.ndarray, sample_rate: int = 24000) -> np.ndarray:
     """Add subtle low-frequency warmth to reduce metallic/robotic quality.
 
     Uses vectorized scipy IIR filter if available, otherwise a fast numpy

@@ -12,6 +12,7 @@ from typing import Optional
 
 import numpy as np
 import torch
+from collections import Counter
 
 try:
     import whisper
@@ -304,7 +305,7 @@ class ASRProcessor:
         segments, info = self.model.transcribe(
             audio,
             beam_size=1,
-            language=None,
+            language="en",  # English default for ghost text too
             vad_filter=False,
             without_timestamps=True,
             no_speech_threshold=0.5,
@@ -348,7 +349,6 @@ class ASRProcessor:
             if len(unique) == 1:
                 print(f"[ASR] Filtered repetition: '{text}'")
                 return ""
-            from collections import Counter
             most_common_count = Counter(words).most_common(1)[0][1]
             if most_common_count / len(words) > 0.7:
                 print(f"[ASR] Filtered dominant repetition: '{text}'")

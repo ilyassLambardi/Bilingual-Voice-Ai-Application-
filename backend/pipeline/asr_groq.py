@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import numpy as np
+from collections import Counter
 
 log = logging.getLogger("s2s.asr")
 _pool = ThreadPoolExecutor(max_workers=2)
@@ -280,7 +281,6 @@ class GroqASR:
                 log.info(f"[ASR] Filtered repetition: '{text}'")
                 return ""
             # Mostly same word (>70%)
-            from collections import Counter
             most_common_count = Counter(words).most_common(1)[0][1]
             if most_common_count / len(words) > 0.7:
                 log.info(f"[ASR] Filtered dominant repetition: '{text}'")

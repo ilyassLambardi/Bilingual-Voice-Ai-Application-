@@ -50,6 +50,7 @@ export default function useAudioStream(sendAudio) {
   // Playback
   const playCtxRef = useRef(null);
   const nextPlayTime = useRef(0);
+  const playGainRef = useRef(null);
 
   // FFT analysers
   const micAnalyserRef = useRef(null);
@@ -168,18 +169,22 @@ export default function useAudioStream(sendAudio) {
     const buf = ctx.createBuffer(1, float32.length, sampleRate);
     buf.getChannelData(0).set(float32);
 
-    // Create playback analyser if needed
+    // Create playback chain: source -> gain -> analyser -> destination
     if (!playAnalyserRef.current || playAnalyserRef.current.context !== ctx) {
+      const gain = ctx.createGain();
+      gain.gain.value = 0.85; // slight headroom to prevent clipping
       const analyser = ctx.createAnalyser();
       analyser.fftSize = FFT_SIZE * 2;
       analyser.smoothingTimeConstant = 0.8;
+      gain.connect(analyser);
       analyser.connect(ctx.destination);
+      playGainRef.current = gain;
       playAnalyserRef.current = analyser;
     }
 
     const src = ctx.createBufferSource();
     src.buffer = buf;
-    src.connect(playAnalyserRef.current);
+    src.connect(playGainRef.current);
 
     // Schedule seamlessly after previous chunk (no gap, no overlap)
     const now = ctx.currentTime;
@@ -192,9 +197,14 @@ export default function useAudioStream(sendAudio) {
 
   const stopPlayback = useCallback(() => {
     if (playCtxRef.current && playCtxRef.current.state !== "closed") {
-      playCtxRef.current.close();
+      try {
+        playCtxRef.current.close();
+      } catch {
+        // already closed or closing
+      }
       playCtxRef.current = null;
       playAnalyserRef.current = null;
+      playGainRef.current = null;
       nextPlayTime.current = 0;
     }
   }, []);
