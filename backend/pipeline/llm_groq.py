@@ -84,8 +84,8 @@ class GroqLLM:
                     clean = self._clean_response(full)
                     self._history.append({"role": "user", "content": user_text})
                     self._history.append({"role": "assistant", "content": clean})
-                    if len(self._history) > 30:
-                        self._history = self._history[-30:]
+                    if len(self._history) > 20:
+                        self._history = self._history[-20:]
                     return  # success
 
                 except Exception as e:
@@ -96,8 +96,17 @@ class GroqLLM:
                         time.sleep(wait)
                     else:
                         log.error(f"[LLM] Groq API error: {e}")
+                        # Send error fallback so user gets feedback
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait,
+                            "Sorry, I'm having trouble responding right now."
+                        )
                         return
-            # all retries failed — sentinel sent in finally
+            # all retries failed — send fallback
+            loop.call_soon_threadsafe(
+                queue.put_nowait,
+                "Sorry, I'm having trouble responding right now."
+            )
 
         def _generate_wrapper():
             try:

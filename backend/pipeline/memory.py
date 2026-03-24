@@ -16,6 +16,20 @@ from typing import Optional
 _DB_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 _DB_PATH = _DB_DIR / "memory.db"
 
+_STOPWORDS = {
+    "i", "me", "my", "you", "your", "we", "our", "the", "a", "an",
+    "is", "am", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "shall", "can",
+    "to", "of", "in", "for", "on", "with", "at", "by", "from",
+    "it", "its", "this", "that", "these", "those", "and", "or",
+    "but", "if", "so", "not", "no", "just", "very", "really",
+    "what", "how", "when", "where", "who", "which", "why",
+    "ich", "du", "er", "sie", "es", "wir", "ihr", "und", "oder",
+    "aber", "das", "der", "die", "ein", "eine", "ist", "sind",
+    "war", "hat", "haben", "wird", "mit", "von", "zu", "auf",
+}
+
 
 class LongTermMemory:
     """Persistent conversational memory with keyword-based retrieval."""
@@ -60,14 +74,17 @@ class LongTermMemory:
         self, user_text: str, assistant_text: str, lang: str = "en"
     ):
         """Store a conversation exchange as a memory."""
-        content = f"User: {user_text}\nAssistant: {assistant_text}"
-        keywords = self._extract_keywords(f"{user_text} {assistant_text}")
-        self._conn.execute(
-            "INSERT INTO memories (category, content, keywords, language) VALUES (?, ?, ?, ?)",
-            ("conversation", content, keywords, lang),
-        )
-        self._conn.commit()
-        self._prune_if_needed()
+        try:
+            content = f"User: {user_text}\nAssistant: {assistant_text}"
+            keywords = self._extract_keywords(f"{user_text} {assistant_text}")
+            self._conn.execute(
+                "INSERT INTO memories (category, content, keywords, language) VALUES (?, ?, ?, ?)",
+                ("conversation", content, keywords, lang),
+            )
+            self._conn.commit()
+            self._prune_if_needed()
+        except sqlite3.Error as e:
+            print(f"[LTM] Store conversation failed: {e}")
 
     def _prune_if_needed(self):
         """Delete oldest, least-relevant memories when count exceeds limit."""
@@ -84,20 +101,26 @@ class LongTermMemory:
 
     def store_preference(self, key: str, value: str):
         """Store or update a user preference."""
-        self._conn.execute(
-            "INSERT OR REPLACE INTO user_prefs (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
-            (key, value),
-        )
-        self._conn.commit()
+        try:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO user_prefs (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                (key, value),
+            )
+            self._conn.commit()
+        except sqlite3.Error as e:
+            print(f"[LTM] Store preference failed: {e}")
 
     def store_summary(self, summary: str, lang: str = "en"):
         """Store a session summary."""
-        keywords = self._extract_keywords(summary)
-        self._conn.execute(
-            "INSERT INTO memories (category, content, keywords, language) VALUES (?, ?, ?, ?)",
-            ("summary", summary, keywords, lang),
-        )
-        self._conn.commit()
+        try:
+            keywords = self._extract_keywords(summary)
+            self._conn.execute(
+                "INSERT INTO memories (category, content, keywords, language) VALUES (?, ?, ?, ?)",
+                ("summary", summary, keywords, lang),
+            )
+            self._conn.commit()
+        except sqlite3.Error as e:
+            print(f"[LTM] Store summary failed: {e}")
 
     # ── Retrieve ───────────────────────────────────────────────────────
 
@@ -170,19 +193,6 @@ class LongTermMemory:
     @staticmethod
     def _extract_keywords(text: str) -> str:
         """Extract meaningful keywords from text (stopword-filtered)."""
-        _STOPWORDS = {
-            "i", "me", "my", "you", "your", "we", "our", "the", "a", "an",
-            "is", "am", "are", "was", "were", "be", "been", "being",
-            "have", "has", "had", "do", "does", "did", "will", "would",
-            "could", "should", "may", "might", "shall", "can",
-            "to", "of", "in", "for", "on", "with", "at", "by", "from",
-            "it", "its", "this", "that", "these", "those", "and", "or",
-            "but", "if", "so", "not", "no", "just", "very", "really",
-            "what", "how", "when", "where", "who", "which", "why",
-            "ich", "du", "er", "sie", "es", "wir", "ihr", "und", "oder",
-            "aber", "das", "der", "die", "ein", "eine", "ist", "sind",
-            "war", "hat", "haben", "wird", "mit", "von", "zu", "auf",
-        }
         words = text.lower().split()
         # Keep words > 2 chars, not stopwords, alpha only
         keywords = [w for w in words if len(w) > 2 and w not in _STOPWORDS and w.isalpha()]
@@ -191,4 +201,7 @@ class LongTermMemory:
         return " ".join(w for w, _ in counts.most_common(20))
 
     def close(self):
-        self._conn.close()
+        try:
+            self._conn.close()
+        except Exception:
+            pass

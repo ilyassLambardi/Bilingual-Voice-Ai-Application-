@@ -12,6 +12,7 @@ Everything stays in RAM — no file I/O.
 """
 
 import copy
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -119,6 +120,13 @@ class VADProcessor:
         # ── Hangover smoothing (prevents flickering at speech boundaries) ──
         self._hangover_frames = 0           # frames remaining in hangover
         self._hangover_max = 4              # ~128ms hangover after VAD drops
+
+        # ── Pre-roll buffer (captures word onsets before VAD triggers) ──
+        self._preroll_chunks = int(0.2 * sample_rate / 512)  # ~200ms
+        self._preroll: deque[np.ndarray] = deque(maxlen=max(self._preroll_chunks, 1))
+
+        # ── Cached buffer size (avoids O(n) sum every chunk) ──────────
+        self._buffer_samples = 0
 
         # ── SNR validation ────────────────────────────────────────────
         self._min_snr_db = 3.0              # minimum SNR to accept an utterance
@@ -272,15 +280,13 @@ class VADProcessor:
             if self._speech_samples > 0:
                 self._speech_samples = 0
                 self._buffer.clear()
+                self._buffer_samples = 0
                 self._hangover_frames = 0
+            # Accumulate pre-roll for word onset capture
+            self._preroll.append(chunk_f)
             return False, None
 
         # ── Above gate — run VAD model ────────────────────────────────
-        # Update noise estimate only if we're not in speech
-        if not self._in_speech:
-            # Cautious: only update noise if probability is low
-            pass  # we'll update below based on VAD probability
-
         tensor = torch.from_numpy(chunk_f)
         prob = self.model(tensor, self.sample_rate).item()
         dyn_threshold = self._get_dynamic_threshold()
@@ -294,10 +300,17 @@ class VADProcessor:
             self._silence_samples = 0
             self._buffer.append(chunk_f)
             self._speech_samples += len(chunk_f)
+            self._buffer_samples += len(chunk_f)
             self._continuous_speech_samples += len(chunk_f)
 
             if not self._in_speech and self._speech_samples >= self.min_speech_samples:
                 self._in_speech = True
+                # Prepend pre-roll chunks to capture word onsets
+                if self._preroll:
+                    preroll_list = list(self._preroll)
+                    self._buffer = preroll_list + self._buffer
+                    self._buffer_samples += sum(len(c) for c in preroll_list)
+                    self._preroll.clear()
                 print(f"[VAD] Speech start (gate={gate:.4f}, noise={self._noise_rms:.4f}, thr={dyn_threshold:.2f})")
 
             # ── Speech timeout: prevent stuck-in-listening ─────────
@@ -312,8 +325,7 @@ class VADProcessor:
                 return False, self._clean_audio(utterance)
 
             # Hard cap: force-emit if buffer exceeds max (prevents OOM)
-            total = sum(len(b) for b in self._buffer)
-            if self._in_speech and total >= self._max_buffer_samples:
+            if self._in_speech and self._buffer_samples >= self._max_buffer_samples:
                 utterance = np.concatenate(self._buffer)
                 self.reset()
                 return False, self._clean_audio(utterance)
@@ -345,7 +357,10 @@ class VADProcessor:
             # Not in speech — discard pre-speech accumulation
             self._speech_samples = 0
             self._buffer.clear()
+            self._buffer_samples = 0
             self._hangover_frames = 0
+            # Accumulate pre-roll for word onset capture
+            self._preroll.append(chunk_f)
             # NOTE: Do NOT reset_states() here — preserves LSTM context
             # for better onset detection. Only reset on explicit reset().
             return False, None
@@ -358,6 +373,8 @@ class VADProcessor:
         self._continuous_speech_samples = 0
         self._hangover_frames = 0
         self._buffer.clear()
+        self._buffer_samples = 0
+        self._preroll.clear()
         self.model.reset_states()  # only place LSTM states are reset
         # Restore base threshold (dynamic adjustment recomputes per-chunk)
         self.threshold = self._base_threshold

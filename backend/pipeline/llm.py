@@ -57,26 +57,33 @@ class LLMProcessor:
         queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
 
         def _generate():
-            resp = self.model.create_chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=0.9,
-                frequency_penalty=0.3,
-                presence_penalty=0.3,
-                stream=True,
-            )
-            full = ""
-            for chunk in resp:
-                delta = chunk["choices"][0].get("delta", {})
-                token = delta.get("content")
-                if token:
-                    full += token
-                    loop.call_soon_threadsafe(queue.put_nowait, token)
-            self._history.append({"role": "user", "content": user_text})
-            self._history.append({"role": "assistant", "content": full})
-            if len(self._history) > 20:
-                self._history = self._history[-20:]
+            try:
+                resp = self.model.create_chat_completion(
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=0.9,
+                    frequency_penalty=0.3,
+                    presence_penalty=0.3,
+                    stream=True,
+                )
+                full = ""
+                for chunk in resp:
+                    delta = chunk["choices"][0].get("delta", {})
+                    token = delta.get("content")
+                    if token:
+                        full += token
+                        loop.call_soon_threadsafe(queue.put_nowait, token)
+                self._history.append({"role": "user", "content": user_text})
+                self._history.append({"role": "assistant", "content": full})
+                if len(self._history) > 20:
+                    self._history = self._history[-20:]
+            except Exception as e:
+                print(f"[LLM] Generation error: {e}")
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    "Sorry, I'm having trouble responding right now."
+                )
 
         def _generate_wrapper():
             try:
@@ -300,8 +307,8 @@ class FallbackLLM:
         clean = self._clean_response(full_response)
         self._history.append({"role": "user", "content": user_text})
         self._history.append({"role": "assistant", "content": clean})
-        if len(self._history) > 24:
-            self._history = self._history[-24:]
+        if len(self._history) > 20:
+            self._history = self._history[-20:]
 
     def _build_messages(self, user_text: str, lang: str = "en") -> list[dict]:
         if lang == "de":
