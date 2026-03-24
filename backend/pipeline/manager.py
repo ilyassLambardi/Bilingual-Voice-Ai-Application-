@@ -164,6 +164,7 @@ class PipelineManager:
         self._interrupt = self._session.interrupt.event
         self._generating = False          # True while LLM+TTS is running
         self._gen_task: Optional[asyncio.Task] = None
+        self._tts_task: Optional[asyncio.Task] = None
         self._interrupt_speech_frames = 0
         self._interrupt_threshold = self._session.interrupt.threshold
         self._backchannel_max_frames = self._session.interrupt.backchannel_max_frames
@@ -443,6 +444,28 @@ class PipelineManager:
                     self._run_pipeline_inner(audio, send),
                     timeout=30.0,
                 )
+            except asyncio.CancelledError:
+                # Fast-path: task was cancelled by _interrupt_generation
+                print("[Pipeline] Cancelled by interrupt — releasing pipeline")
+                # Cancel orphaned TTS worker if still running
+                if self._tts_task and not self._tts_task.done():
+                    self._tts_task.cancel()
+                    try:
+                        await self._tts_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                self._tts_task = None
+                self._generating = False
+                # Schedule processing of audio buffered during interrupt
+                if self._audio_buffer:
+                    total = sum(len(a) for a in self._audio_buffer)
+                    print(f"[Pipeline] Post-interrupt: {len(self._audio_buffer)} fragment(s), {total} samples queued")
+                    self._send_fn = send
+                    loop = asyncio.get_running_loop()
+                    self._accumulation_timer = loop.call_later(
+                        0.5,
+                        lambda: asyncio.ensure_future(self._flush_accumulated(self._send_fn))
+                    )
             except asyncio.TimeoutError:
                 print("[Pipeline] TIMEOUT: pipeline exceeded 30s, aborting")
                 self._generating = False
@@ -580,6 +603,7 @@ class PipelineManager:
                 await self._speak_sentence(sent_text, sent_lang, send)
 
         tts_task = asyncio.create_task(_tts_worker())
+        self._tts_task = tts_task
 
         if self._llm is not None:
             async for token in self._llm.stream(
@@ -630,9 +654,10 @@ class PipelineManager:
         t_llm_tts = time.time() - t_llm_start
         print(f"[Perf] ASR={t_asr:.1f}s  LLM+TTS={t_llm_tts:.1f}s  TOTAL={t_total:.1f}s")
 
+        self._tts_task = None
         if self._interrupt.is_set():
-            # Interrupted — release generating flag so new audio can be processed.
-            print("[Pipeline] Exited gracefully after interrupt")
+            # Interrupted via flag (slow path) — release generating flag
+            print("[Pipeline] Exited gracefully after interrupt (flag)")
             self._generating = False
             # Schedule processing of any audio buffered during the interrupt
             if self._audio_buffer:
@@ -641,12 +666,11 @@ class PipelineManager:
                 self._send_fn = send
                 loop = asyncio.get_running_loop()
                 self._accumulation_timer = loop.call_later(
-                    1.5,  # short delay — give user time to finish speaking
+                    0.5,
                     lambda: asyncio.ensure_future(self._flush_accumulated(self._send_fn))
                 )
             else:
                 # No buffered audio — user may still be speaking, stay listening
-                # VAD will transition to idle naturally when noise subsides
                 pass
         else:
             # Normal completion — send final transcript and go idle
@@ -731,10 +755,8 @@ class PipelineManager:
     async def _interrupt_generation(self, send: SendFn):
         """User spoke while AI was talking → stop AI immediately, start listening.
 
-        Sets the interrupt flag so the running pipeline exits gracefully.
-        Does NOT cancel the gen_task — that would orphan the internal TTS
-        worker task and leak audio.  Instead the pipeline checks the flag
-        at every await point and exits within ~100ms.
+        Cancels the running generation task and TTS worker for instant stop,
+        then sets the interrupt flag as a backup for any code that checks it.
         """
         print("[Manager] ⚡ Interrupted by user! Stopping AI speech.")
         self._interrupt.set()
@@ -745,6 +767,12 @@ class PipelineManager:
             self._accumulation_timer.cancel()
             self._accumulation_timer = None
 
+        # Force-cancel running tasks for immediate stop
+        if self._tts_task and not self._tts_task.done():
+            self._tts_task.cancel()
+        if self._gen_task and not self._gen_task.done():
+            self._gen_task.cancel()
+
         # Do NOT reset VAD or clear audio buffer — the user is still speaking.
         # VAD continues tracking their speech. Completed utterances are now
         # accumulated in handle_audio_chunk (the KEY FIX above).
@@ -752,9 +780,9 @@ class PipelineManager:
         # Tell frontend to stop playback immediately
         self.state = "listening"
         try:
-            await send(json.dumps({"type": "audio_end"}))
-            await send(json.dumps({"type": "state", "state": "listening"}))
-            await send(json.dumps({"type": "interrupt"}))
+            await send(build_audio_end())
+            await send(build_state_message("listening"))
+            await send(build_interrupt())
         except Exception:
             pass
 
@@ -841,6 +869,7 @@ class PipelineManager:
                 await self._speak_sentence(sent_text, sent_lang, send)
 
         tts_task = asyncio.create_task(_tts_worker())
+        self._tts_task = tts_task
 
         if self._llm is not None:
             async for token in self._llm.stream(
