@@ -54,6 +54,7 @@ class Config:
     min_speech_ms: int = 200              # ignore speech shorter than this
     min_silence_ms: int = 700              # silence before "speech ended" (700ms = natural pause)
     min_audio_duration: float = 0.3       # min seconds of audio before sending to ASR (keep short valid speech)
+    noise_cancellation: bool = False       # disable until basic pipeline confirmed working
 
     # ── Groq API (cloud mode) ───────────────────────────────────
     groq_api_key: str = _env("GROQ_API_KEY", "")

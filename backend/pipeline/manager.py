@@ -410,7 +410,7 @@ class PipelineManager:
 
         # Apply noise cancellation off the event loop (Fix 3)
         rms_before = float(np.sqrt(np.mean(combined ** 2)))
-        if self._vad and rms_before > 0.001:
+        if self._vad and rms_before > 0.001 and getattr(self.config, 'noise_cancellation', False):
             loop = asyncio.get_running_loop()
             cleaned = await loop.run_in_executor(
                 _load_pool, self._vad.clean_audio, combined
