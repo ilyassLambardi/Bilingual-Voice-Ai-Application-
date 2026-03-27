@@ -52,6 +52,29 @@ from pipeline.io_handler import (
 
 log = logging.getLogger("s2s")
 
+# ── Ring buffer for pipeline logs (viewable via /api/logs) ───────────
+import collections, io, sys
+
+class _LogCapture:
+    """Captures print() output into a ring buffer for remote inspection."""
+    def __init__(self, maxlen=200):
+        self._buf = collections.deque(maxlen=maxlen)
+        self._original = sys.stdout
+
+    def write(self, s):
+        self._original.write(s)
+        if s.strip():
+            self._buf.append(s.rstrip())
+
+    def flush(self):
+        self._original.flush()
+
+    def get_lines(self, n=100):
+        return list(self._buf)[-n:]
+
+_log_capture = _LogCapture(maxlen=300)
+sys.stdout = _log_capture
+
 _MAX_SESSIONS = 10  # connection limit
 
 # Built frontend directory (created by `npm run build` in frontend/)
@@ -277,6 +300,12 @@ async def diagnose():
     results["overall"] = "ALL OK" if all_ok else "ISSUES FOUND"
 
     return results
+
+
+@app.get("/api/logs")
+async def get_logs(n: int = 100):
+    """Return recent pipeline log lines for remote debugging."""
+    return {"lines": _log_capture.get_lines(min(n, 300))}
 
 
 @app.websocket("/ws")
