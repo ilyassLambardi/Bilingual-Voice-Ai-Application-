@@ -205,7 +205,7 @@ async def diagnose():
         try:
             t0 = time.time()
             tokens = []
-            async for tok in llm.stream("Say hello in one word", lang="en", memory_context=""):
+            async for tok in llm.stream("Say hello in one word", lang="en"):
                 tokens.append(tok)
                 if len(tokens) > 5:
                     break
@@ -249,11 +249,23 @@ async def diagnose():
     else:
         results["tests"]["tts"] = {"status": "error", "detail": "No TTS loaded"}
 
-    # Test 7: Sessions
+    # Test 7: Sessions (with per-session state)
+    session_details = {}
+    for sid, smgr in _sessions.items():
+        session_details[sid] = {
+            "state": smgr.state,
+            "generating": smgr._generating,
+            "models_ready": smgr._models_ready,
+            "buffer_fragments": len(smgr._audio_buffer),
+            "has_timer": smgr._accumulation_timer is not None,
+            "interrupt_set": smgr._interrupt.is_set(),
+            "asr_type": type(smgr._asr).__name__ if smgr._asr else "None",
+            "llm_type": type(smgr._llm).__name__ if smgr._llm else "None",
+        }
     results["tests"]["sessions"] = {
         "active": len(_sessions),
         "max": _MAX_SESSIONS,
-        "session_ids": list(_sessions.keys()),
+        "details": session_details,
     }
 
     # Overall

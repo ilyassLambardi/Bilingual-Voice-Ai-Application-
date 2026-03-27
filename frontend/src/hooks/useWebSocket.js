@@ -93,6 +93,7 @@ export default function useWebSocket({ onAudio, onTranscript, onStateChange, onG
               break;
             case "error":
               console.warn("[WS] Server error:", msg.message);
+              cb.onStateChange?.("error:" + (msg.message || "Unknown error"));
               break;
             default:
               break;

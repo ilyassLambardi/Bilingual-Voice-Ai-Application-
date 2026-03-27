@@ -141,10 +141,14 @@ export default function App() {
   }, []);
   const handleGhostText = useCallback((t) => setGhostText(t || ""), []);
   const handleStateChange = useCallback((s) => {
+    if (s.startsWith("error:")) {
+      pushToast("error", s.slice(6));
+      return;
+    }
     setPipelineState(s);
     if (s !== "listening") setGhostText("");
     if (s !== "speaking") setSubtitle({ text: "", language: "" });
-  }, []);
+  }, [pushToast]);
   const handleBackchannel = useCallback(() => {
     setBackchannelPulse(p => p + 1);
   }, []);
