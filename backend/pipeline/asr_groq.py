@@ -113,8 +113,9 @@ class GroqASR:
             return {"text": "", "language": "en", "language_prob": 0.0}
 
         rms = float(np.sqrt(np.mean(audio ** 2)))
-        if rms < 0.003:
-            log.info(f"[ASR] Audio too quiet (RMS={rms:.4f}), skipping")
+        print(f"[ASR] Input: {duration:.2f}s, RMS={rms:.4f}, dtype={audio.dtype}")
+        if rms < 0.001:
+            print(f"[ASR] Audio too quiet (RMS={rms:.4f}), skipping")
             return {"text": "", "language": "en", "language_prob": 0.0}
 
         wav_bytes = _audio_to_wav_bytes(audio, sample_rate=16000)
@@ -192,7 +193,12 @@ class GroqASR:
                     detected = "en"
                     log.info(f"[ASR] EN (default)")
 
+                raw_text = text
                 text = self._filter_text(text, no_speech_prob=avg_nsp, duration_s=duration)
+                if raw_text and not text:
+                    print(f"[ASR] Hallucination filter removed: '{raw_text}' (nsp={avg_nsp:.2f})")
+                elif text:
+                    print(f"[ASR] Result [{detected}]: '{text}'")
 
                 return {
                     "text": text,

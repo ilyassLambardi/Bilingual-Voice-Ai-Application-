@@ -409,13 +409,21 @@ class PipelineManager:
             return
 
         # Apply noise cancellation off the event loop (Fix 3)
-        if self._vad:
+        rms_before = float(np.sqrt(np.mean(combined ** 2)))
+        if self._vad and rms_before > 0.001:
             loop = asyncio.get_running_loop()
-            combined = await loop.run_in_executor(
+            cleaned = await loop.run_in_executor(
                 _load_pool, self._vad.clean_audio, combined
             )
+            rms_after = float(np.sqrt(np.mean(cleaned ** 2)))
+            # Safety: if clean_audio destroyed the signal, keep original
+            if rms_after > rms_before * 0.1:
+                combined = cleaned
+                print(f"[VAD] Noise cancel: RMS {rms_before:.4f} -> {rms_after:.4f}")
+            else:
+                print(f"[VAD] Noise cancel SKIPPED (would destroy signal): RMS {rms_before:.4f} -> {rms_after:.4f}")
 
-        print(f"[VAD] Processing {n_fragments} fragment(s), {duration:.1f}s of audio")
+        print(f"[VAD] Processing {n_fragments} fragment(s), {duration:.1f}s, RMS={float(np.sqrt(np.mean(combined**2))):.4f}")
         self._generating = True  # set early to prevent double-runs (P2 fix)
         self._gen_task = asyncio.create_task(
             self._run_pipeline(combined, send)
@@ -519,7 +527,8 @@ class PipelineManager:
 
         # Guard: ASR returned empty text (already filtered by hallucination_filter)
         if not user_text.strip():
-            print(f"[ASR] Empty transcription — skipping")
+            rms = float(np.sqrt(np.mean(audio ** 2)))
+            print(f"[ASR] Empty transcription — skipping (audio: {len(audio)/16000:.1f}s, RMS={rms:.4f})")
             self.state = "idle"
             await send(json.dumps({"type": "state", "state": "idle"}))
             return
