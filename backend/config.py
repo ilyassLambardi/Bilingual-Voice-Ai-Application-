@@ -52,7 +52,7 @@ class Config:
     # ── VAD (silero — always local, lightweight) ────────────────
     vad_threshold: float = 0.45           # lower = catches softer speech at end of utterances
     min_speech_ms: int = 200              # ignore speech shorter than this
-    min_silence_ms: int = 1200            # silence before "speech ended" (high = waits for slow speakers)
+    min_silence_ms: int = 700              # silence before "speech ended" (700ms = natural pause)
     min_audio_duration: float = 0.3       # min seconds of audio before sending to ASR (keep short valid speech)
 
     # ── Groq API (cloud mode) ───────────────────────────────────

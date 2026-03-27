@@ -154,7 +154,7 @@ class PipelineManager:
         # ── Audio accumulation (delegated to SessionState) ────────────
         self._audio_buffer: list[np.ndarray] = []
         self._accumulation_timer: Optional[asyncio.TimerHandle] = None
-        self._accumulation_delay = 3.0
+        self._accumulation_delay = 1.5
         self._send_fn: Optional[SendFn] = None
 
         # ── Rate limiting (delegated to SessionState) ─────────────────
@@ -349,11 +349,17 @@ class PipelineManager:
                 if self._accumulation_timer is not None:
                     self._accumulation_timer.cancel()
                 self._send_fn = send  # always use latest send ref
-                loop = asyncio.get_running_loop()
-                self._accumulation_timer = loop.call_later(
-                    self._accumulation_delay,
-                    lambda: asyncio.ensure_future(self._flush_accumulated(self._send_fn))
-                )
+
+                # Fix 4: flush immediately if we have enough fragments
+                if len(self._audio_buffer) >= 5:
+                    print("[VAD] Max fragments reached — flushing immediately")
+                    asyncio.ensure_future(self._flush_accumulated(self._send_fn))
+                else:
+                    loop = asyncio.get_running_loop()
+                    self._accumulation_timer = loop.call_later(
+                        self._accumulation_delay,
+                        lambda: asyncio.ensure_future(self._flush_accumulated(self._send_fn))
+                    )
 
             # ── Idle recovery: VAD rejected noise / timed out ──
             # If VAD is not speaking AND returned no utterance AND
@@ -399,6 +405,13 @@ class PipelineManager:
             self.state = "idle"
             await send(json.dumps({"type": "state", "state": "idle"}))
             return
+
+        # Apply noise cancellation off the event loop (Fix 3)
+        if self._vad:
+            loop = asyncio.get_running_loop()
+            combined = await loop.run_in_executor(
+                _load_pool, self._vad.clean_audio, combined
+            )
 
         print(f"[VAD] Processing {n_fragments} fragment(s), {duration:.1f}s of audio")
         self._generating = True  # set early to prevent double-runs (P2 fix)

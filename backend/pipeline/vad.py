@@ -341,7 +341,7 @@ class VADProcessor:
         noise = max(self._noise_rms, 1e-8)
         return 20.0 * np.log10(max(sig_rms, 1e-8) / noise)
 
-    def _clean_audio(self, audio: np.ndarray) -> np.ndarray:
+    def clean_audio(self, audio: np.ndarray) -> np.ndarray:
         """Apply advanced 4-stage noise cancellation pipeline to an utterance.
 
         Stages:
@@ -418,8 +418,7 @@ class VADProcessor:
                     if snr < self._min_snr_db:
                         print(f"[VAD] Utterance rejected: SNR={snr:.1f}dB < {self._min_snr_db}dB")
                         return False, None
-                    # Apply noise suppression before returning
-                    return False, self._clean_audio(utterance)
+                    return False, utterance
                 return True, None
             # Not in speech — clean up any pre-speech accumulation
             if self._speech_samples > 0:
@@ -467,13 +466,13 @@ class VADProcessor:
                 if snr < self._min_snr_db:
                     print(f"[VAD] Timeout utterance rejected: low SNR")
                     return False, None
-                return False, self._clean_audio(utterance)
+                return False, utterance
 
             # Hard cap: force-emit if buffer exceeds max (prevents OOM)
             if self._in_speech and self._buffer_samples >= self._max_buffer_samples:
                 utterance = np.concatenate(self._buffer)
                 self.reset()
-                return False, self._clean_audio(utterance)
+                return False, utterance
 
             return self._in_speech, None
 
@@ -495,7 +494,7 @@ class VADProcessor:
                         print(f"[VAD] Utterance rejected: SNR={snr:.1f}dB < {self._min_snr_db}dB")
                         return False, None
                     print(f"[VAD] Utterance accepted: SNR={snr:.1f}dB")
-                    return False, self._clean_audio(utterance)
+                    return False, utterance
 
                 return True, None  # still waiting for more silence
 
