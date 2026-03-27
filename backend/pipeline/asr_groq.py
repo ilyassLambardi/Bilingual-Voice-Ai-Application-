@@ -144,10 +144,10 @@ class GroqASR:
                         nsp = getattr(seg, 'no_speech_prob', 0.0)
                         seg_text = getattr(seg, 'text', '').strip()
                         nsp_values.append(nsp)
-                        if nsp < 0.6 and seg_text:
+                        if nsp < 0.85 and seg_text:
                             good_parts.append(seg_text)
                         else:
-                            log.info(f"[ASR] Dropped segment (no_speech={nsp:.2f}): '{seg_text}'")
+                            print(f"[ASR] Dropped segment (no_speech={nsp:.2f}): '{seg_text}'")
                     text = " ".join(good_parts).strip()
                     avg_nsp = sum(nsp_values) / len(nsp_values) if nsp_values else 0.0
                 else:
@@ -178,7 +178,7 @@ class GroqASR:
                             for seg in de_segments:
                                 nsp = getattr(seg, 'no_speech_prob', 0.0)
                                 seg_text = getattr(seg, 'text', '').strip()
-                                if nsp < 0.6 and seg_text:
+                                if nsp < 0.85 and seg_text:
                                     de_parts.append(seg_text)
                             de_text = " ".join(de_parts).strip()
                         else:
