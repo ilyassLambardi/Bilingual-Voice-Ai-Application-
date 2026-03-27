@@ -97,35 +97,8 @@ def _clean_transcript(text: str) -> str:
 
 _load_pool = ThreadPoolExecutor(max_workers=1)
 
-# Consolidated hallucination set (single source of truth)
-# Only patterns that Whisper hallucinates from silence/noise — NOT valid words
-_HALLUCINATIONS = {
-    "", ".", "..", "...",
-    # English
-    "thank you", "thanks", "thanks for watching", "thank you for watching",
-    "subscribe", "like and subscribe", "like subscribe",
-    "please subscribe", "hit the bell",
-    "bye", "goodbye", "you", "the", "the end",
-    "um", "uh", "hmm", "huh", "oh", "ah",
-    "subtitles by", "amara.org", "subtitles made by",
-    "copyright", "all rights reserved",
-    "music", "applause", "laughter",
-    # German
-    "danke", "danke schön", "danke schon", "tschüss", "tschuss",
-    "wie geht's die", "wie gehts die", "wie geht es dir",
-    "wie geht's", "wie gehts", "hallo wie geht's",
-    "guten tag", "auf wiedersehen", "bis bald",
-    "vielen dank", "herzlich willkommen",
-    "untertitel von", "untertitelung", "untertitel",
-    "musik",
-}
-
-_HALLUCINATION_SUBSTRINGS = [
-    "thanks for watching", "thank you for watching",
-    "subscribe", "subtitles by", "amara.org",
-    "untertitel", "copyright",
-    "please like", "hit the bell",
-]
+# Hallucination filtering is handled by the shared hallucination_filter module
+# in ASR (asr.py / asr_groq.py). No duplicate filtering needed here.
 
 
 class PipelineManager:
@@ -428,6 +401,7 @@ class PipelineManager:
             return
 
         print(f"[VAD] Processing {n_fragments} fragment(s), {duration:.1f}s of audio")
+        self._generating = True  # set early to prevent double-runs (P2 fix)
         self._gen_task = asyncio.create_task(
             self._run_pipeline(combined, send)
         )
@@ -516,16 +490,9 @@ class PipelineManager:
         user_text = asr_result["text"]
         lang = asr_result["language"] or "en"
 
-        # Filter empty or hallucinated transcriptions (secondary safety net)
-        cleaned = user_text.strip().rstrip(".!?,").lower()
-        is_hallucination = (
-            not cleaned
-            or cleaned in _HALLUCINATIONS
-            or len(cleaned) < 2
-            or any(sub in cleaned for sub in _HALLUCINATION_SUBSTRINGS)
-        )
-        if is_hallucination:
-            print(f"[ASR] Rejected hallucination: '{user_text.strip()}'")
+        # Guard: ASR returned empty text (already filtered by hallucination_filter)
+        if not user_text.strip():
+            print(f"[ASR] Empty transcription — skipping")
             self.state = "idle"
             await send(json.dumps({"type": "state", "state": "idle"}))
             return
@@ -559,8 +526,16 @@ class PipelineManager:
             except Exception:
                 pass
 
-        # LTM recall disabled — small model gets confused by injected memories
+        # LTM recall: retrieve relevant memories for context (P5 fix)
         memory_context = ""
+        if self._ltm and getattr(self.config, 'ltm_recall_enabled', False):
+            try:
+                memories = self._ltm.recall(user_text, limit=2)
+                if memories:
+                    memory_context = "\n".join(memories)
+                    print(f"[LTM] Recalled {len(memories)} memories for context")
+            except Exception as e:
+                print(f"[LTM] Recall failed: {e}")
 
         # ── Start generating immediately (no filler delay) ────────────
         self._generating = True
@@ -690,9 +665,9 @@ class PipelineManager:
                 except Exception:
                     pass
 
+            self._generating = False  # reset before state change (P7 fix)
             self.state = "idle"
             await send(json.dumps({"type": "state", "state": "idle"}))
-            self._generating = False
 
     # ── TTS helper ────────────────────────────────────────────────────
 
@@ -824,7 +799,22 @@ class PipelineManager:
         await send(json.dumps({"type": "state", "state": "thinking"}))
 
         try:
-            await self._run_text_pipeline(text, lang, send)
+            await asyncio.wait_for(
+                self._run_text_pipeline(text, lang, send),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            print("[Chat] TIMEOUT: text pipeline exceeded 30s, aborting")
+            await send(json.dumps({"type": "error", "message": "Response timed out. Please try again."}))
+        except asyncio.CancelledError:
+            print("[Chat] Cancelled by interrupt")
+            if self._tts_task and not self._tts_task.done():
+                self._tts_task.cancel()
+                try:
+                    await self._tts_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._tts_task = None
         except Exception as e:
             print(f"[Manager] Text chat error: {e}")
             traceback.print_exc()
@@ -958,6 +948,24 @@ class PipelineManager:
                 self._ltm.summarize_and_store(self._llm._history)
             except Exception:
                 pass
+
+        # Cancel running generation/TTS tasks to prevent orphaned work (P4 fix)
+        self._interrupt.set()
+        if self._tts_task and not self._tts_task.done():
+            self._tts_task.cancel()
+            try:
+                await self._tts_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._tts_task = None
+        if self._gen_task and not self._gen_task.done():
+            self._gen_task.cancel()
+            try:
+                await self._gen_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._gen_task = None
+
         if self._llm:
             self._llm.clear_history()
         if self._vad:

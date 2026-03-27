@@ -189,10 +189,14 @@ class EdgeTTSProcessor:
             if len(pcm) == 0:
                 return b''
 
-            # Normalize volume
-            peak = np.max(np.abs(pcm.astype(np.float32)))
-            if peak > 0:
-                pcm = (pcm.astype(np.float32) / peak * 0.92 * 32767).astype(np.int16)
+            # RMS normalization for consistent volume across sentences (P6 fix)
+            pcm_f = pcm.astype(np.float32)
+            rms = np.sqrt(np.mean(pcm_f ** 2))
+            if rms > 1.0:  # avoid div-by-zero on silence
+                target_rms = 0.25 * 32767  # ~25% of full scale
+                gain = min(target_rms / rms, 5.0)  # cap gain to prevent over-amplification
+                pcm_f = np.clip(pcm_f * gain, -32767, 32767)
+                pcm = pcm_f.astype(np.int16)
 
             # Fade in/out to prevent clicks
             pcm = _apply_fades(pcm, fade_ms=10, sample_rate=self.sample_rate)

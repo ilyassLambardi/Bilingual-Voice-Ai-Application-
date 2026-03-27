@@ -75,6 +75,7 @@ class Config:
     # ── LLM generation (shared) ─────────────────────────────────
     llm_max_tokens: int = int(_env("LLM_MAX_TOKENS", "350"))
     llm_temperature: float = float(_env("LLM_TEMPERATURE", "0.85"))
+    ltm_recall_enabled: bool = _env("LTM_RECALL", "true").lower() in ("true", "1", "yes")
     llm_system_prompt: str = (
         "You are Alex, a real person having a casual voice conversation. "
         "This is a SPOKEN conversation, not text chat.\n\n"
