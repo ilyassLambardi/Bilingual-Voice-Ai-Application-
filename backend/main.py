@@ -60,6 +60,7 @@ class _LogCapture:
     def __init__(self, maxlen=200):
         self._buf = collections.deque(maxlen=maxlen)
         self._original = sys.stdout
+        self.encoding = getattr(self._original, 'encoding', 'utf-8')
 
     def write(self, s):
         self._original.write(s)
@@ -68,6 +69,12 @@ class _LogCapture:
 
     def flush(self):
         self._original.flush()
+
+    def isatty(self):
+        return False
+
+    def fileno(self):
+        return self._original.fileno()
 
     def get_lines(self, n=100):
         return list(self._buf)[-n:]
