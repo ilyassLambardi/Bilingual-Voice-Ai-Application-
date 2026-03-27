@@ -464,10 +464,13 @@ class PipelineManager:
             except Exception as e:
                 print(f"[Pipeline] ERROR: {e}")
                 traceback.print_exc()
-                self._generating = False
                 self.state = "idle"
                 await send(json.dumps({"type": "state", "state": "idle"}))
                 await send(json.dumps({"type": "error", "message": str(e)}))
+            finally:
+                # ALWAYS reset generating flag — prevents permanent stuck state
+                # when _run_pipeline_inner returns early (empty ASR, rate limit, etc.)
+                self._generating = False
 
     def _check_rate_limit(self) -> bool:
         """Return True if within rate limit, False if exceeded."""
