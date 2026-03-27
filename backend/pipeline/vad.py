@@ -80,6 +80,129 @@ def _spectral_subtract(signal: np.ndarray, noise_profile: np.ndarray,
     return output[:len(signal)]
 
 
+def _highpass_fir(signal: np.ndarray, cutoff: float = 80.0,
+                  sample_rate: int = 16000, num_taps: int = 255) -> np.ndarray:
+    """FIR high-pass filter via windowed-sinc method.
+
+    Removes DC offset, low-frequency rumble (HVAC, fans), and
+    AC mains hum (50/60 Hz).  Pure numpy — no scipy needed.
+    """
+    fc = cutoff / sample_rate
+    n = np.arange(num_taps)
+    mid = (num_taps - 1) / 2.0
+
+    # Low-pass sinc kernel
+    with np.errstate(invalid="ignore"):
+        h = np.sinc(2.0 * fc * (n - mid)).astype(np.float32)
+    # Blackman window
+    h *= np.blackman(num_taps).astype(np.float32)
+    h_sum = np.sum(h)
+    if abs(h_sum) > 1e-8:
+        h /= h_sum
+    # Spectral inversion → high-pass
+    h = -h
+    h[int(mid)] += 1.0
+    return np.convolve(signal, h, mode="same").astype(np.float32)
+
+
+def _wiener_filter(signal: np.ndarray, noise_spectrum: np.ndarray,
+                   n_fft: int = 512, hop: int = 256,
+                   floor: float = 0.05) -> np.ndarray:
+    """Wiener filter — SNR-based gain, far less musical noise
+    than spectral subtraction.
+
+    Gain per bin: H = max(1 − noise²/signal², floor)
+    """
+    window = np.hanning(n_fft).astype(np.float32)
+    freq_bins = n_fft // 2 + 1
+
+    if len(noise_spectrum) != freq_bins:
+        noise_spectrum = np.interp(
+            np.linspace(0, 1, freq_bins),
+            np.linspace(0, 1, len(noise_spectrum)),
+            noise_spectrum,
+        ).astype(np.float32)
+
+    noise_power = noise_spectrum ** 2
+
+    pad_len = (n_fft - len(signal) % hop) % hop
+    padded = np.concatenate([signal, np.zeros(pad_len, dtype=np.float32)])
+    n_frames = max(1, (len(padded) - n_fft) // hop + 1)
+    output = np.zeros_like(padded)
+    win_sum = np.zeros_like(padded)
+
+    for i in range(n_frames):
+        start = i * hop
+        frame = padded[start:start + n_fft] * window
+        spectrum = np.fft.rfft(frame)
+        power = np.abs(spectrum) ** 2
+
+        gain = np.maximum(1.0 - noise_power / np.maximum(power, 1e-10), floor)
+        clean_frame = np.fft.irfft(spectrum * gain)
+
+        output[start:start + n_fft] += clean_frame[:n_fft] * window
+        win_sum[start:start + n_fft] += window ** 2
+
+    win_sum = np.maximum(win_sum, 1e-8)
+    output /= win_sum
+    return output[:len(signal)].astype(np.float32)
+
+
+def _spectral_gate(signal: np.ndarray, noise_spectrum: np.ndarray,
+                   n_fft: int = 1024, hop: int = 512,
+                   threshold_factor: float = 1.5) -> np.ndarray:
+    """Per-band spectral gate with smooth sigmoid transition.
+
+    Catches residual noise that the Wiener filter missed.
+    Uses a larger FFT (1024) for finer frequency resolution.
+    """
+    window = np.hanning(n_fft).astype(np.float32)
+    freq_bins = n_fft // 2 + 1
+
+    if len(noise_spectrum) != freq_bins:
+        noise_spectrum = np.interp(
+            np.linspace(0, 1, freq_bins),
+            np.linspace(0, 1, len(noise_spectrum)),
+            noise_spectrum,
+        ).astype(np.float32)
+
+    threshold = noise_spectrum * threshold_factor
+
+    pad_len = (n_fft - len(signal) % hop) % hop
+    padded = np.concatenate([signal, np.zeros(pad_len, dtype=np.float32)])
+    n_frames = max(1, (len(padded) - n_fft) // hop + 1)
+    output = np.zeros_like(padded)
+    win_sum = np.zeros_like(padded)
+
+    for i in range(n_frames):
+        start = i * hop
+        frame = padded[start:start + n_fft] * window
+        spectrum = np.fft.rfft(frame)
+        mag = np.abs(spectrum)
+        phase = np.angle(spectrum)
+
+        # Smooth sigmoid gate: 0→1 transition around threshold
+        gate = 1.0 / (1.0 + np.exp(-6.0 * (mag / np.maximum(threshold, 1e-8) - 1.0)))
+
+        clean_frame = np.fft.irfft(mag * gate * np.exp(1j * phase))
+        output[start:start + n_fft] += clean_frame[:n_fft] * window
+        win_sum[start:start + n_fft] += window ** 2
+
+    win_sum = np.maximum(win_sum, 1e-8)
+    output /= win_sum
+    return output[:len(signal)].astype(np.float32)
+
+
+def _normalize_rms(signal: np.ndarray, target_rms: float = 0.1,
+                   max_gain: float = 10.0) -> np.ndarray:
+    """RMS-based auto-gain normalization for consistent ASR input level."""
+    rms = float(np.sqrt(np.mean(signal ** 2)))
+    if rms < 1e-8:
+        return signal
+    gain = min(target_rms / rms, max_gain)
+    return np.clip(signal * gain, -1.0, 1.0).astype(np.float32)
+
+
 class VADProcessor:
     """Streaming VAD using Silero VAD from torch.hub with noise cancellation."""
 
@@ -219,13 +342,32 @@ class VADProcessor:
         return 20.0 * np.log10(max(sig_rms, 1e-8) / noise)
 
     def _clean_audio(self, audio: np.ndarray) -> np.ndarray:
-        """Apply spectral noise suppression to an utterance."""
+        """Apply advanced 4-stage noise cancellation pipeline to an utterance.
+
+        Stages:
+            1. High-pass FIR (80 Hz) — removes DC, rumble, AC hum
+            2. Wiener filter — primary noise reduction (SNR-based gain)
+            3. Spectral gate — catches residual noise with smooth sigmoid
+            4. RMS normalization — consistent level for ASR
+        """
         if not self._spectral_enabled or self._noise_spectrum is None:
             return audio
         try:
-            return _spectral_subtract(audio, self._noise_spectrum)
-        except Exception:
-            return audio  # fallback: return original
+            # Stage 1: High-pass filter
+            audio = _highpass_fir(audio, cutoff=80.0, sample_rate=self.sample_rate)
+            # Stage 2: Wiener filter (primary denoising)
+            audio = _wiener_filter(audio, self._noise_spectrum)
+            # Stage 3: Spectral gate (residual noise)
+            audio = _spectral_gate(audio, self._noise_spectrum)
+            # Stage 4: Normalize for consistent ASR input
+            audio = _normalize_rms(audio, target_rms=0.1)
+            return audio
+        except Exception as e:
+            print(f"[VAD] Advanced denoise failed ({e}), falling back to spectral subtract")
+            try:
+                return _spectral_subtract(audio, self._noise_spectrum)
+            except Exception:
+                return audio
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -253,6 +395,9 @@ class VADProcessor:
             chunk_f = chunk.astype(np.float32)
             # Clamp to valid range (prevents distortion from bad input)
             chunk_f = np.clip(chunk_f, -1.0, 1.0)
+
+        # ── Per-chunk DC removal (improves VAD accuracy) ──────
+        chunk_f -= np.mean(chunk_f)
 
         rms = float(np.sqrt(np.mean(chunk_f ** 2)))
 
