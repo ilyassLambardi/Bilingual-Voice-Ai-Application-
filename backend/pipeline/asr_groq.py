@@ -133,26 +133,22 @@ class GroqASR:
                     response_format="verbose_json",
                 )
 
-                # ── Parse segments for no_speech_prob filtering ──
+                # ── Always use transcription.text as primary source ──
+                # Groq Whisper often returns empty segment texts but populates
+                # the top-level text field correctly.
+                text = transcription.text.strip() if transcription.text else ""
+                print(f"[ASR] Groq raw text: '{text}'")
+
+                # Use segments only for no_speech_prob validation
                 segments = getattr(transcription, 'segments', None)
                 avg_nsp = 0.0
                 if segments and isinstance(segments, list):
-                    # Filter out segments with high no_speech_prob
-                    good_parts = []
-                    nsp_values = []
-                    for seg in segments:
-                        nsp = getattr(seg, 'no_speech_prob', 0.0)
-                        seg_text = getattr(seg, 'text', '').strip()
-                        nsp_values.append(nsp)
-                        if nsp < 0.85 and seg_text:
-                            good_parts.append(seg_text)
-                        else:
-                            print(f"[ASR] Dropped segment (no_speech={nsp:.2f}): '{seg_text}'")
-                    text = " ".join(good_parts).strip()
+                    nsp_values = [getattr(seg, 'no_speech_prob', 0.0) for seg in segments]
                     avg_nsp = sum(nsp_values) / len(nsp_values) if nsp_values else 0.0
-                else:
-                    # Fallback: use full text
-                    text = transcription.text.strip() if transcription.text else ""
+                    # Reject only if ALL segments have very high no_speech_prob
+                    if avg_nsp > 0.85 and text:
+                        print(f"[ASR] Rejected: avg no_speech_prob={avg_nsp:.2f} too high")
+                        text = ""
 
                 # Text-based language detection (more reliable than Whisper auto)
                 text_lang = _detect_lang_from_text(text)
@@ -172,17 +168,7 @@ class GroqASR:
                             language="de",
                             response_format="verbose_json",
                         )
-                        de_segments = getattr(de_transcription, 'segments', None)
-                        if de_segments and isinstance(de_segments, list):
-                            de_parts = []
-                            for seg in de_segments:
-                                nsp = getattr(seg, 'no_speech_prob', 0.0)
-                                seg_text = getattr(seg, 'text', '').strip()
-                                if nsp < 0.85 and seg_text:
-                                    de_parts.append(seg_text)
-                            de_text = " ".join(de_parts).strip()
-                        else:
-                            de_text = de_transcription.text.strip() if de_transcription.text else ""
+                        de_text = de_transcription.text.strip() if de_transcription.text else ""
                         if de_text:
                             text = de_text
                     except Exception as de_err:
