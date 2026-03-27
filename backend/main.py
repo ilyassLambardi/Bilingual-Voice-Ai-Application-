@@ -126,6 +126,147 @@ async def system_info():
     }
 
 
+@app.get("/api/diagnose")
+async def diagnose():
+    """Test every pipeline component and return detailed results."""
+    import numpy as np
+    import time
+    import traceback
+
+    results = {"timestamp": time.time(), "mode": config.mode, "tests": {}}
+
+    # Test 1: Config
+    results["tests"]["config"] = {
+        "status": "ok",
+        "groq_key_set": bool(config.groq_api_key and not config.groq_api_key.startswith("gsk_your")),
+        "groq_key_length": len(config.groq_api_key) if config.groq_api_key else 0,
+        "min_silence_ms": config.min_silence_ms,
+        "vad_threshold": config.vad_threshold,
+        "tts_engine": config.tts_engine,
+    }
+
+    # Test 2: Shared manager state
+    if _shared_manager:
+        mgr = _shared_manager
+        results["tests"]["manager"] = {
+            "status": "ok",
+            "models_ready": mgr._models_ready,
+            "has_vad": mgr._vad is not None,
+            "has_asr": mgr._asr is not None,
+            "has_llm": mgr._llm is not None,
+            "has_tts": mgr._tts is not None,
+            "asr_type": type(mgr._asr).__name__ if mgr._asr else "None",
+            "llm_type": type(mgr._llm).__name__ if mgr._llm else "None",
+            "tts_type": type(mgr._tts).__name__ if mgr._tts else "None",
+            "generating": mgr._generating,
+            "state": mgr.state,
+        }
+    else:
+        results["tests"]["manager"] = {"status": "error", "detail": "No shared manager"}
+
+    # Test 3: VAD with synthetic audio
+    try:
+        from pipeline.vad import VADProcessor
+        vad = VADProcessor(threshold=0.45, min_speech_ms=200, min_silence_ms=700, sample_rate=16000)
+        noise = np.random.randn(512).astype(np.float32) * 0.001
+        is_speaking, utt = vad.process_chunk(noise)
+        results["tests"]["vad"] = {"status": "ok", "model_loaded": True}
+    except Exception as e:
+        results["tests"]["vad"] = {"status": "error", "detail": str(e)}
+
+    # Test 4: ASR (quick Groq API check)
+    if _shared_manager and _shared_manager._asr:
+        asr = _shared_manager._asr
+        try:
+            # Create 1s of silence to test API connectivity
+            test_audio = np.random.randn(16000).astype(np.float32) * 0.01
+            t0 = time.time()
+            result = await asr.transcribe(test_audio)
+            t1 = time.time()
+            results["tests"]["asr"] = {
+                "status": "ok",
+                "type": type(asr).__name__,
+                "latency_ms": round((t1 - t0) * 1000),
+                "result": result.get("text", "")[:100],
+            }
+        except Exception as e:
+            results["tests"]["asr"] = {
+                "status": "error",
+                "type": type(asr).__name__,
+                "detail": str(e),
+                "traceback": traceback.format_exc()[-500:],
+            }
+    else:
+        results["tests"]["asr"] = {"status": "error", "detail": "No ASR loaded"}
+
+    # Test 5: LLM (quick generation test)
+    if _shared_manager and _shared_manager._llm:
+        llm = _shared_manager._llm
+        try:
+            t0 = time.time()
+            tokens = []
+            async for tok in llm.stream("Say hello in one word", lang="en", memory_context=""):
+                tokens.append(tok)
+                if len(tokens) > 5:
+                    break
+            t1 = time.time()
+            results["tests"]["llm"] = {
+                "status": "ok",
+                "type": type(llm).__name__,
+                "latency_ms": round((t1 - t0) * 1000),
+                "first_tokens": "".join(tokens)[:50],
+            }
+        except Exception as e:
+            results["tests"]["llm"] = {
+                "status": "error",
+                "type": type(llm).__name__,
+                "detail": str(e),
+                "traceback": traceback.format_exc()[-500:],
+            }
+    else:
+        results["tests"]["llm"] = {"status": "error", "detail": "No LLM loaded (echo mode)"}
+
+    # Test 6: TTS
+    if _shared_manager and _shared_manager._tts:
+        tts = _shared_manager._tts
+        try:
+            t0 = time.time()
+            audio_bytes = await tts.synthesize("Hello", "en")
+            t1 = time.time()
+            results["tests"]["tts"] = {
+                "status": "ok" if len(audio_bytes) > 0 else "error",
+                "type": type(tts).__name__,
+                "latency_ms": round((t1 - t0) * 1000),
+                "output_bytes": len(audio_bytes),
+            }
+        except Exception as e:
+            results["tests"]["tts"] = {
+                "status": "error",
+                "type": type(tts).__name__,
+                "detail": str(e),
+                "traceback": traceback.format_exc()[-500:],
+            }
+    else:
+        results["tests"]["tts"] = {"status": "error", "detail": "No TTS loaded"}
+
+    # Test 7: Sessions
+    results["tests"]["sessions"] = {
+        "active": len(_sessions),
+        "max": _MAX_SESSIONS,
+        "session_ids": list(_sessions.keys()),
+    }
+
+    # Overall
+    all_ok = all(
+        t.get("status") == "ok"
+        for k, t in results["tests"].items()
+        if k != "sessions"
+    )
+    results["overall"] = "ALL OK" if all_ok else "ISSUES FOUND"
+
+    return results
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     # Connection limit

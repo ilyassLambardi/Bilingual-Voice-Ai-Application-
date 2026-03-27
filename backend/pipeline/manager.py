@@ -378,7 +378,9 @@ class PipelineManager:
 
     async def _flush_accumulated(self, send: SendFn):
         """Called after silence timeout — process all buffered audio as one utterance."""
+        print(f"[Flush] Called: buffer={len(self._audio_buffer)} fragments, generating={self._generating}, lock={self._pipeline_lock.locked()}")
         if not self._audio_buffer:
+            print("[Flush] Empty buffer — nothing to process")
             return
         # Use lock to prevent concurrent pipeline runs (race condition fix)
         if self._pipeline_lock.locked() or self._generating:
@@ -499,7 +501,16 @@ class PipelineManager:
         self.state = "thinking"
         await send(json.dumps({"type": "state", "state": "thinking"}))
 
-        asr_result = await self._asr.transcribe(audio)
+        try:
+            asr_result = await self._asr.transcribe(audio)
+        except Exception as e:
+            print(f"[ASR] TRANSCRIPTION FAILED: {e}")
+            traceback.print_exc()
+            await send(json.dumps({"type": "error", "message": f"Speech recognition failed: {e}"}))
+            self.state = "idle"
+            await send(json.dumps({"type": "state", "state": "idle"}))
+            return
+
         user_text = asr_result["text"]
         lang = asr_result["language"] or "en"
 
