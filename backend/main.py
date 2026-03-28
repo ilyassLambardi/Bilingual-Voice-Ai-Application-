@@ -53,34 +53,20 @@ from pipeline.io_handler import (
 log = logging.getLogger("s2s")
 
 # ── Ring buffer for pipeline logs (viewable via /api/logs) ───────────
-import collections, io, sys
+import collections
 
-class _LogCapture:
-    """Captures print() output into a ring buffer for remote inspection."""
-    def __init__(self, maxlen=200):
-        self._buf = collections.deque(maxlen=maxlen)
-        self._original = sys.stdout
-        self.encoding = getattr(self._original, 'encoding', 'utf-8')
+_log_buf = collections.deque(maxlen=300)
+_original_print = print
 
-    def write(self, s):
-        self._original.write(s)
-        if s.strip():
-            self._buf.append(s.rstrip())
+def _capturing_print(*args, **kwargs):
+    """Wrapper around print() that also captures to ring buffer."""
+    _original_print(*args, **kwargs)
+    msg = " ".join(str(a) for a in args)
+    if msg.strip():
+        _log_buf.append(msg.rstrip())
 
-    def flush(self):
-        self._original.flush()
-
-    def isatty(self):
-        return False
-
-    def fileno(self):
-        return self._original.fileno()
-
-    def get_lines(self, n=100):
-        return list(self._buf)[-n:]
-
-_log_capture = _LogCapture(maxlen=300)
-sys.stdout = _log_capture
+import builtins
+builtins.print = _capturing_print
 
 _MAX_SESSIONS = 10  # connection limit
 
@@ -312,7 +298,7 @@ async def diagnose():
 @app.get("/api/logs")
 async def get_logs(n: int = 100):
     """Return recent pipeline log lines for remote debugging."""
-    return {"lines": _log_capture.get_lines(min(n, 300))}
+    return {"lines": list(_log_buf)[-min(n, 300):]}
 
 
 @app.websocket("/ws")
