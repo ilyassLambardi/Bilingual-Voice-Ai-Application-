@@ -55,7 +55,7 @@ def main():
     print("  README.md")
 
     # Root files
-    for f in ["Dockerfile", "requirements.txt", ".dockerignore"]:
+    for f in ["Dockerfile", "requirements.txt", "requirements-cloud.txt", ".dockerignore"]:
         src = PROJECT / f
         if src.exists():
             shutil.copy2(src, stage / f)
