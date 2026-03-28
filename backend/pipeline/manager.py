@@ -769,7 +769,7 @@ class PipelineManager:
         Cancels the running generation task and TTS worker for instant stop,
         then sets the interrupt flag as a backup for any code that checks it.
         """
-        print("[Manager] ⚡ Interrupted by user! Stopping AI speech.")
+        print("[Manager] Interrupted by user! Stopping AI speech.")
         self._interrupt.set()
         self._interrupt_speech_frames = 0
 

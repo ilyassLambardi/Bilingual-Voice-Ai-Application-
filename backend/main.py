@@ -60,7 +60,12 @@ _original_print = print
 
 def _capturing_print(*args, **kwargs):
     """Wrapper around print() that also captures to ring buffer."""
-    _original_print(*args, **kwargs)
+    try:
+        _original_print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # Windows charmap can't handle some Unicode — print ASCII-safe version
+        safe = " ".join(str(a) for a in args).encode("ascii", "replace").decode()
+        _original_print(safe, **{k: v for k, v in kwargs.items() if k != "sep"})
     msg = " ".join(str(a) for a in args)
     if msg.strip():
         _log_buf.append(msg.rstrip())
