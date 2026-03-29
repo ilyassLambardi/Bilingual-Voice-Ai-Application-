@@ -123,13 +123,12 @@ class GroqASR:
 
         for attempt in range(max_retries + 1):
             try:
-                # Default to English — only switch to German based on
-                # text-based post-detection (more reliable than Whisper's
-                # auto-detect which often misclassifies short English)
+                # Let Whisper auto-detect the language first.
+                # This ensures German speech is transcribed as German,
+                # not mangled into English-sounding words.
                 transcription = self._client.audio.transcriptions.create(
                     file=("audio.wav", wav_bytes),
                     model=self._model,
-                    language="en",  # English default
                     response_format="verbose_json",
                 )
 
@@ -137,7 +136,8 @@ class GroqASR:
                 # Groq Whisper often returns empty segment texts but populates
                 # the top-level text field correctly.
                 text = transcription.text.strip() if transcription.text else ""
-                print(f"[ASR] Groq raw text: '{text}'")
+                whisper_lang = getattr(transcription, 'language', 'en') or 'en'
+                print(f"[ASR] Groq raw text: '{text}' (whisper_lang={whisper_lang})")
 
                 # Use segments only for no_speech_prob validation
                 segments = getattr(transcription, 'segments', None)
@@ -150,34 +150,53 @@ class GroqASR:
                         print(f"[ASR] Rejected: avg no_speech_prob={avg_nsp:.2f} too high")
                         text = ""
 
-                # Text-based language detection (more reliable than Whisper auto)
+                # Combine Whisper's language detection with text-based detection
                 text_lang = _detect_lang_from_text(text)
 
-                # If text is clearly German but we transcribed as English,
-                # re-transcribe with language="de" for better accuracy.
-                # Only re-transcribe if we have strong German signals (avoid
-                # doubling API calls on false positives).
-                words = set(text.lower().split())
-                de_word_count = len(words & _DE_WORDS)
-                if text_lang == "de" and de_word_count >= 2:
-                    log.info(f"[ASR] German detected ({de_word_count} keywords), re-transcribing with lang=de")
-                    try:
-                        de_transcription = self._client.audio.transcriptions.create(
-                            file=("audio.wav", wav_bytes),
-                            model=self._model,
-                            language="de",
-                            response_format="verbose_json",
-                        )
-                        de_text = de_transcription.text.strip() if de_transcription.text else ""
-                        if de_text:
-                            text = de_text
-                    except Exception as de_err:
-                        log.warning(f"[ASR] German re-transcribe failed ({de_err}), using English result")
-                    detected = "de"
-                    log.info(f"[ASR] DE (text-detect)")
+                # Decide final language:
+                # - If Whisper says German AND text confirms → German
+                # - If text clearly German (chars + keywords) → German
+                # - If Whisper says something not in allowed set → English
+                # - Otherwise → English
+                if whisper_lang == 'de' or text_lang == 'de':
+                    detected = 'de'
+                    # If Whisper didn't transcribe as German, re-transcribe
+                    if whisper_lang != 'de' and text:
+                        words = set(text.lower().split())
+                        de_word_count = len(words & _DE_WORDS)
+                        if de_word_count >= 1:
+                            log.info(f"[ASR] Text-detected German, re-transcribing with lang=de")
+                            try:
+                                de_transcription = self._client.audio.transcriptions.create(
+                                    file=("audio.wav", wav_bytes),
+                                    model=self._model,
+                                    language="de",
+                                    response_format="verbose_json",
+                                )
+                                de_text = de_transcription.text.strip() if de_transcription.text else ""
+                                if de_text:
+                                    text = de_text
+                            except Exception as de_err:
+                                log.warning(f"[ASR] German re-transcribe failed ({de_err})")
+                    log.info(f"[ASR] DE (whisper={whisper_lang}, text={text_lang})")
                 else:
-                    detected = "en"
-                    log.info(f"[ASR] EN (default)")
+                    detected = 'en'
+                    # If Whisper detected a non-allowed language, re-transcribe as English
+                    if whisper_lang not in ALLOWED_LANGUAGES and text:
+                        log.info(f"[ASR] Whisper detected '{whisper_lang}', forcing English")
+                        try:
+                            en_transcription = self._client.audio.transcriptions.create(
+                                file=("audio.wav", wav_bytes),
+                                model=self._model,
+                                language="en",
+                                response_format="verbose_json",
+                            )
+                            en_text = en_transcription.text.strip() if en_transcription.text else ""
+                            if en_text:
+                                text = en_text
+                        except Exception:
+                            pass
+                    log.info(f"[ASR] EN (whisper={whisper_lang}, text={text_lang})")
 
                 raw_text = text
                 text = self._filter_text(text, no_speech_prob=avg_nsp, duration_s=duration)

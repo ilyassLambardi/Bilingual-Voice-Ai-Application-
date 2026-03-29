@@ -97,6 +97,15 @@ VALID_SHORT = {
     "hallo", "hello", "bitte", "genau", "echt", "krass",
     "oh wow", "oh nice", "oh cool", "oh no", "oh yeah",
     "na klar", "na gut", "na ja",
+    # Common German phrases that must NOT be filtered
+    "danke", "danke schön", "danke schon", "vielen dank",
+    "tschüss", "tschuss", "auf wiedersehen", "bis bald",
+    "guten tag", "guten morgen", "guten abend",
+    "wie geht's", "wie gehts", "wie geht es dir",
+    "alles klar", "stimmt", "richtig", "natürlich",
+    # Common English words that are valid speech
+    "bye", "goodbye", "bye bye", "alright", "thanks",
+    "see you", "see you later",
 }
 
 # ── Character entropy calculation ──────────────────────────────────────
