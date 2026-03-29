@@ -425,9 +425,15 @@ class PipelineManager:
 
         print(f"[VAD] Processing {n_fragments} fragment(s), {duration:.1f}s, RMS={float(np.sqrt(np.mean(combined**2))):.4f}")
         self._generating = True  # set early to prevent double-runs (P2 fix)
-        self._gen_task = asyncio.create_task(
-            self._run_pipeline(combined, send)
-        )
+        try:
+            self._gen_task = asyncio.create_task(
+                self._run_pipeline(combined, send)
+            )
+        except Exception as e:
+            print(f"[VAD] Task creation failed: {e}")
+            self._generating = False
+            self.state = "idle"
+            await send(json.dumps({"type": "state", "state": "idle"}))
 
     # ── Full pipeline ─────────────────────────────────────────────────
 
@@ -530,6 +536,7 @@ class PipelineManager:
             rms = float(np.sqrt(np.mean(audio ** 2)))
             print(f"[ASR] Empty transcription — skipping (audio: {len(audio)/16000:.1f}s, RMS={rms:.4f})")
             self.state = "idle"
+            await send(json.dumps({"type": "audio_end"}))
             await send(json.dumps({"type": "state", "state": "idle"}))
             return
 
@@ -751,7 +758,7 @@ class PipelineManager:
             if len(audio) < 4000:  # too short for meaningful ASR
                 return
 
-            result = await self._asr.transcribe_fast(audio)
+            result = await self._asr.transcribe(audio)
             ghost = result.get("text", "").strip()
             if ghost:
                 await send(json.dumps({
@@ -855,12 +862,10 @@ class PipelineManager:
             print(f"[Manager] Text chat error: {e}")
             traceback.print_exc()
         finally:
-            if not self._interrupt.is_set():
-                self._generating = False
-                self.state = "idle"
-                await send(json.dumps({"type": "state", "state": "idle"}))
-            else:
-                self._generating = False
+            self._generating = False
+            await send(json.dumps({"type": "audio_end"}))
+            self.state = "idle"
+            await send(json.dumps({"type": "state", "state": "idle"}))
 
     async def _run_text_pipeline(self, user_text: str, lang: str, send: SendFn):
         """LLM → TTS pipeline for typed text input (concurrent TTS)."""

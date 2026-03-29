@@ -406,14 +406,21 @@ async def _cleanup_session(mgr: PipelineManager):
 
 
 def _apply_session_config(data: dict, mgr: PipelineManager):
-    """Apply runtime config overrides per-session (not global)."""
+    """Apply runtime config overrides per-session (not global).
+    
+    In local mode the manager is shared, so we only apply overrides
+    to per-session objects (VAD threshold), never to the global config.
+    """
     if "language" in data:
         lang = data["language"]
-        mgr.config.asr_language = lang if lang != "auto" else None
+        # Only safe for cloud mode (per-session manager)
+        if config.mode == "cloud":
+            mgr.config.asr_language = lang if lang != "auto" else None
     if "vad_threshold" in data:
         val = float(data["vad_threshold"])
-        if 0.1 <= val <= 0.99:  # validate bounds
-            mgr.config.vad_threshold = val
+        if 0.1 <= val <= 0.99 and mgr._vad:
+            mgr._vad.threshold = val
+            mgr._vad._base_threshold = val
 
 
 # ── Static file serving (production: built React app) ──────────────

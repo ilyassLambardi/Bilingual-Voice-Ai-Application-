@@ -43,8 +43,9 @@ def _spectral_subtract(signal: np.ndarray, noise_profile: np.ndarray,
     hop = 256
     window = np.hanning(n_fft).astype(np.float32)
 
-    # Pad signal to fit full frames
-    pad_len = (n_fft - len(signal) % hop) % hop
+    # Pad signal to fit at least one full frame
+    min_len = n_fft + hop  # ensure at least 1 full frame
+    pad_len = max(0, min_len - len(signal))
     padded = np.concatenate([signal, np.zeros(pad_len, dtype=np.float32)])
 
     n_frames = max(1, (len(padded) - n_fft) // hop + 1)
@@ -77,7 +78,7 @@ def _spectral_subtract(signal: np.ndarray, noise_profile: np.ndarray,
     # Normalize overlap-add
     win_sum = np.maximum(win_sum, 1e-8)
     output /= win_sum
-    return output[:len(signal)]
+    return output[:len(signal)].astype(np.float32)
 
 
 def _highpass_fir(signal: np.ndarray, cutoff: float = 80.0,
