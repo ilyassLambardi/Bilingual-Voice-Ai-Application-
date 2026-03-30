@@ -960,7 +960,7 @@ class PipelineManager:
         """Detect if typed text is German or English.
 
         English is the strong default.  Only returns 'de' when the text
-        is clearly German (special chars + keyword, or >= 40% keywords).
+        is clearly German (special chars + keyword, or >= 30% keywords).
         """
         _DE_CHARS = {"ä", "ö", "ü", "ß"}
         _DE_WORDS = {
@@ -969,14 +969,19 @@ class PipelineManager:
             "bitte", "gut", "mir", "dir", "mich", "dich", "kannst", "hast",
             "wir", "sie", "haben", "werden", "können", "möchte", "geht",
         }
-        words = set(text.lower().split())
-        chars = set(text.lower())
-        has_de_chars = bool(chars & _DE_CHARS)
+        # Strip punctuation from each word so "hallo!" matches "hallo"
+        raw_words = text.lower().split()
+        words = set(re.sub(r'[^\w]', '', w) for w in raw_words if w)
+        words.discard('')
+        if not words:
+            return "en"
+        has_de_chars = any(ch in text.lower() for ch in _DE_CHARS)
         de_word_hits = len(words & _DE_WORDS)
-        # Require special chars + at least 1 keyword, or >= 40% keywords
         if has_de_chars and de_word_hits >= 1:
             return "de"
-        if len(words) >= 2 and de_word_hits / len(words) >= 0.4:
+        if len(words) == 1 and de_word_hits == 1:
+            return "de"
+        if len(words) >= 2 and de_word_hits / len(words) >= 0.3:
             return "de"
         return "en"
 

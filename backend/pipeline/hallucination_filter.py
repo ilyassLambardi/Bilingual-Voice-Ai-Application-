@@ -102,10 +102,12 @@ VALID_SHORT = {
     "tschüss", "tschuss", "auf wiedersehen", "bis bald",
     "guten tag", "guten morgen", "guten abend",
     "wie geht's", "wie gehts", "wie geht es dir",
+    "hallo wie geht's", "herzlich willkommen",
+    "bis dann", "bis zum nächsten mal",
     "alles klar", "stimmt", "richtig", "natürlich",
     # Common English words that are valid speech
     "bye", "goodbye", "bye bye", "alright", "thanks",
-    "see you", "see you later",
+    "see you", "see you later", "thank you", "you're welcome",
 }
 
 # ── Character entropy calculation ──────────────────────────────────────

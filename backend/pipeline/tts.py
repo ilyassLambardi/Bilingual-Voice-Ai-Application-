@@ -62,16 +62,24 @@ def _detect_sentence_lang(text: str) -> str:
     """Detect if a sentence is German or English.
 
     English is the strong default.  Only returns 'de' when the text
-    is clearly German (special chars + keyword, or >= 40% keywords).
+    is clearly German (special chars + keyword, or >= 30% keywords).
     """
     lower = text.lower()
-    words = set(lower.split())
+    # Strip punctuation from each word so "ist," matches "ist"
+    raw_words = lower.split()
+    words = set(re.sub(r'[^\w]', '', w) for w in raw_words if w)
+    words.discard('')
+    if not words:
+        return "en"
     de_count = len(words & _DE_MARKERS)
     # German chars are strong signal, but require at least 1 keyword
     if any(ch in lower for ch in "\u00e4\u00f6\u00fc\u00df") and de_count >= 1:
         return "de"
-    # Pure keyword ratio — must be clearly German
-    if len(words) >= 2 and de_count / len(words) >= 0.4:
+    # Single German word detection
+    if len(words) == 1 and de_count == 1:
+        return "de"
+    # Keyword ratio — >= 30% German keywords
+    if len(words) >= 2 and de_count / len(words) >= 0.3:
         return "de"
     return "en"
 

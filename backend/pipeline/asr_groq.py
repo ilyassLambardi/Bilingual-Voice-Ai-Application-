@@ -16,6 +16,8 @@ import wave
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+import re
+
 import numpy as np
 
 from .hallucination_filter import filter_hallucination, VALID_SHORT
@@ -24,6 +26,19 @@ log = logging.getLogger("s2s.asr")
 _pool = ThreadPoolExecutor(max_workers=2)
 
 ALLOWED_LANGUAGES = {"en", "de"}
+
+# ── Whisper language name → ISO code mapping ──
+_LANG_MAP = {
+    "english": "en", "german": "de", "deutsch": "de",
+    "en": "en", "de": "de",
+}
+
+def _normalize_lang(raw: str) -> str:
+    """Normalize Whisper language output to ISO 639-1 code.
+    
+    Groq/Whisper may return full names like 'german' or codes like 'de'.
+    """
+    return _LANG_MAP.get(raw.lower().strip(), raw.lower().strip())
 
 # ── Text-based German detection (backup for language routing) ──
 _DE_CHARS = set("äöüß")
@@ -46,18 +61,25 @@ def _detect_lang_from_text(text: str) -> str:
     """Detect language from transcribed text using characters + keywords.
 
     English is the strong default.  Only returns 'de' when the text
-    is *clearly* German (special chars OR >= 40 % German keywords).
+    is *clearly* German (special chars OR >= 30 % German keywords).
     """
     lower = text.lower()
-    words = set(lower.split())
-    # German-specific characters are a strong signal, but require
-    # at least one German keyword too (avoids false positives on names)
+    # Strip punctuation from each word so "hallo," matches "hallo"
+    raw_words = lower.split()
+    words = set(re.sub(r'[^\w]', '', w) for w in raw_words if w)
+    words.discard('')
+    if not words:
+        return "en"
+    # German-specific characters are a strong signal
     has_de_chars = any(ch in lower for ch in _DE_CHARS)
     de_hits = len(words & _DE_WORDS)
     if has_de_chars and de_hits >= 1:
         return "de"
-    # Pure keyword ratio — must be clearly German (>= 40 %)
-    if len(words) >= 2 and de_hits / len(words) >= 0.4:
+    # Single German word detection (for short utterances like "Hallo", "Danke")
+    if len(words) == 1 and de_hits == 1:
+        return "de"
+    # Keyword ratio — >= 30% German keywords
+    if len(words) >= 2 and de_hits / len(words) >= 0.3:
         return "de"
     return "en"
 
@@ -136,8 +158,9 @@ class GroqASR:
                 # Groq Whisper often returns empty segment texts but populates
                 # the top-level text field correctly.
                 text = transcription.text.strip() if transcription.text else ""
-                whisper_lang = getattr(transcription, 'language', 'en') or 'en'
-                print(f"[ASR] Groq raw text: '{text}' (whisper_lang={whisper_lang})")
+                raw_lang = getattr(transcription, 'language', 'en') or 'en'
+                whisper_lang = _normalize_lang(raw_lang)
+                print(f"[ASR] Groq raw text: '{text}' (whisper_lang={whisper_lang}, raw={raw_lang})")
 
                 # Use segments only for no_speech_prob validation
                 segments = getattr(transcription, 'segments', None)
