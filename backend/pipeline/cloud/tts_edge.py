@@ -9,15 +9,17 @@ MP3 → PCM conversion via subprocess + imageio-ffmpeg bundled binary.
 """
 
 import asyncio
+import logging
 import os
-import random
-import re
 import subprocess
-import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+from .tts_common import sanitize_text, apply_fades
 
 _pool = ThreadPoolExecutor(max_workers=2)
 
@@ -45,23 +47,6 @@ _VOICE_MAP = {
 }
 _DEFAULT_VOICE = "en-US-AndrewMultilingualNeural"
 
-# Filler phrases for "thinking" cues
-_FILLERS = {
-    "en": ["Hmm, let me think...", "One moment...", "Let me see..."],
-    "de": ["Moment mal...", "Lass mich überlegen...", "Einen Augenblick..."],
-}
-
-
-def _sanitize_text(text: str) -> str:
-    """Clean text for TTS — remove unspeakable characters."""
-    text = re.sub(r'[\*\_\#\~\`\[\]\(\)\{\}\|]', '', text)
-    text = re.sub(r'https?://\S+', '', text)
-    text = re.sub(r'[^\w\s.,!?;:\'\"()\-/&$€%+@À-ɏßäöüÄÖÜ]', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    if not re.search(r'[a-zA-ZÀ-ɏ]', text):
-        return ""
-    return text
-
 
 def _mp3_bytes_to_pcm(mp3_data: bytes, target_sr: int = 24000) -> np.ndarray:
     """Convert MP3 bytes → int16 PCM numpy array at target sample rate.
@@ -78,23 +63,12 @@ def _mp3_bytes_to_pcm(mp3_data: bytes, target_sr: int = 24000) -> np.ndarray:
             input=mp3_data, capture_output=True, timeout=30,
         )
     except subprocess.TimeoutExpired:
-        print("[EdgeTTS] ffmpeg decode timed out (30s)")
+        logger.warning("[EdgeTTS] ffmpeg decode timed out (30s)")
         return np.array([], dtype=np.int16)
     if proc.returncode != 0:
-        print(f"[EdgeTTS] ffmpeg decode error: {proc.stderr.decode()[:200]}")
+        logger.warning("[EdgeTTS] ffmpeg decode error: %s", proc.stderr.decode()[:200])
         return np.array([], dtype=np.int16)
     return np.frombuffer(proc.stdout, dtype=np.int16)
-
-
-def _apply_fades(pcm: np.ndarray, fade_ms: int = 8, sample_rate: int = 24000) -> np.ndarray:
-    """Apply short fade-in/out to eliminate clicks at chunk boundaries."""
-    fade_samples = int(fade_ms * sample_rate / 1000)
-    if len(pcm) < fade_samples * 2:
-        return pcm
-    pcm = pcm.astype(np.float32)
-    pcm[:fade_samples] *= np.linspace(0, 1, fade_samples)
-    pcm[-fade_samples:] *= np.linspace(1, 0, fade_samples)
-    return pcm.astype(np.int16)
 
 
 class EdgeTTSProcessor:
@@ -103,7 +77,6 @@ class EdgeTTSProcessor:
     Single multilingual voice for all languages — no model switching.
     """
 
-    _filler_cache: dict[str, list[bytes]] = {}
     _initialized: bool = False
 
     def __init__(self, sample_rate: int = 24_000, device: str = "cpu"):
@@ -111,44 +84,44 @@ class EdgeTTSProcessor:
         # device param accepted for API compat but not used (cloud TTS)
 
         if not EdgeTTSProcessor._initialized:
-            print("[EdgeTTS] Microsoft Edge Neural TTS ready.")
-            print(f"[EdgeTTS] EN voice: {_VOICE_MAP['en']}")
-            print(f"[EdgeTTS] DE voice: {_VOICE_MAP['de']}")
-            print(f"[EdgeTTS] Sample rate: {sample_rate}Hz")
+            logger.info("[EdgeTTS] Microsoft Edge Neural TTS ready.")
+            logger.info("[EdgeTTS] EN voice: %s", _VOICE_MAP['en'])
+            logger.info("[EdgeTTS] DE voice: %s", _VOICE_MAP['de'])
+            logger.info("[EdgeTTS] Sample rate: %dHz", sample_rate)
             EdgeTTSProcessor._initialized = True
 
-            # Pre-cache fillers in background (best-effort)
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self._cache_fillers_async())
-            except RuntimeError:
-                pass  # no running loop yet; fillers will be None until first call
-
     # ── Public async API ──────────────────────────────────────────────
+
+    @staticmethod
+    async def _fetch_edge_audio(text: str, voice: str, rate: str, pitch: str) -> bytes:
+        """Single edge-tts call — returns MP3 bytes or empty bytes."""
+        communicate = edge_tts.Communicate(text=text, voice=voice, rate=rate, pitch=pitch)
+        mp3_chunks = []
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                mp3_chunks.append(chunk["data"])
+        return b''.join(mp3_chunks) if mp3_chunks else b''
 
     async def _stream_with_retry(
         self, text: str, voice: str, rate: str, pitch: str, max_retries: int = 3,
     ) -> bytes:
-        """Call edge-tts with retry + exponential backoff for transient timeouts."""
+        """Call edge-tts with retry + short backoff for transient timeouts."""
         for attempt in range(max_retries):
             try:
-                communicate = edge_tts.Communicate(
-                    text=text, voice=voice, rate=rate, pitch=pitch,
+                mp3_data = await asyncio.wait_for(
+                    self._fetch_edge_audio(text, voice, rate, pitch),
+                    timeout=8,
                 )
-                mp3_chunks = []
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        mp3_chunks.append(chunk["data"])
-                if mp3_chunks:
-                    return b''.join(mp3_chunks)
-                print(f"[EdgeTTS] No audio returned (attempt {attempt+1})")
-            except (TimeoutError, Exception) as e:
-                wait = 0.5 * (2 ** attempt)
+                if mp3_data:
+                    return mp3_data
+                logger.warning("[EdgeTTS] No audio returned (attempt %d)", attempt + 1)
+            except (TimeoutError, asyncio.TimeoutError, Exception) as e:
+                wait = 0.5 * (attempt + 1)  # 0.5s, 1.0s, 1.5s
                 if attempt < max_retries - 1:
-                    print(f"[EdgeTTS] Attempt {attempt+1} failed ({type(e).__name__}), retrying in {wait:.1f}s...")
+                    logger.warning("[EdgeTTS] Attempt %d failed (%s), retrying in %.1fs...", attempt + 1, type(e).__name__, wait)
                     await asyncio.sleep(wait)
                 else:
-                    print(f"[EdgeTTS] All {max_retries} attempts failed: {e}")
+                    logger.error("[EdgeTTS] All %d attempts failed: %s", max_retries, e)
         return b''
 
     async def synthesize(
@@ -159,7 +132,7 @@ class EdgeTTSProcessor:
         prosody: bool = True,
     ) -> bytes:
         """Convert text -> raw Int16 PCM bytes at self.sample_rate."""
-        text = _sanitize_text(text)
+        text = sanitize_text(text)
         if not text:
             return b''
 
@@ -199,7 +172,7 @@ class EdgeTTSProcessor:
                 pcm = pcm_f.astype(np.int16)
 
             # Fade in/out to prevent clicks
-            pcm = _apply_fades(pcm, fade_ms=10, sample_rate=self.sample_rate)
+            pcm = apply_fades(pcm, fade_ms=10, sample_rate=self.sample_rate)
 
             # Trailing silence after sentence-ending punctuation (shorter = smoother flow)
             trail_ms = 60 if text.rstrip()[-1:] in '.!?' else 30
@@ -209,31 +182,8 @@ class EdgeTTSProcessor:
             return pcm.tobytes()
 
         except Exception as e:
-            print(f"[EdgeTTS] Synthesis error: {e}")
-            traceback.print_exc()
+            logger.error("[EdgeTTS] Synthesis error: %s", e, exc_info=True)
             return b''
-
-    # ── Filler support ────────────────────────────────────────────────
-
-    async def _cache_fillers_async(self):
-        """Pre-cache filler phrases for instant playback."""
-        for lang in _FILLERS:
-            EdgeTTSProcessor._filler_cache[lang] = []
-            for phrase in _FILLERS[lang]:
-                try:
-                    pcm = await self.synthesize(phrase, lang=lang, prosody=False)
-                    if pcm:
-                        EdgeTTSProcessor._filler_cache[lang].append(pcm)
-                except Exception as e:
-                    print(f"[EdgeTTS] Filler cache failed for '{phrase}': {e}")
-            print(f"[EdgeTTS] Cached {len(EdgeTTSProcessor._filler_cache[lang])} fillers for {lang.upper()}")
-
-    def get_filler(self, lang: str = "en") -> Optional[bytes]:
-        """Return a random pre-cached filler PCM."""
-        fillers = EdgeTTSProcessor._filler_cache.get(lang, [])
-        if not fillers:
-            return None
-        return random.choice(fillers)
 
     def get_sample_rate(self) -> int:
         return self.sample_rate

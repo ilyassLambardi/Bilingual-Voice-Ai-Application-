@@ -1,7 +1,6 @@
 """
 Advanced Hallucination Filter for ASR output.
 
-Shared module used by both local ASR (asr.py) and Groq ASR (asr_groq.py).
 Combines multiple detection layers to catch Whisper hallucinations while
 preserving valid short conversational input.
 
@@ -28,17 +27,16 @@ log = logging.getLogger("s2s.hallucination")
 
 # ── Known hallucination phrases (lowercased, stripped) ─────────────────
 HALLUCINATION_EXACT = {
-    # English Whisper noise hallucinations
-    "thank you", "thanks", "thanks for watching", "thank you for watching",
+    # English Whisper noise hallucinations (standalone outputs from silence)
+    "thanks for watching", "thank you for watching",
     "thanks for listening", "thank you for listening",
     "subscribe", "like and subscribe", "like subscribe",
     "please subscribe", "hit the bell", "hit the like button",
     "ring the bell", "click subscribe",
-    "bye", "goodbye", "bye bye", "see you", "see you next time",
+    "see you next time",
     "you", "the", "the end", "end",
-    "um", "uh", "hmm", "huh",
+    "um", "uh", "huh",
     "oh", "ah", "mhm",
-    "yes", "no",  # only as standalone full transcripts, not in longer text
     "subtitles by", "amara.org", "subtitles made by",
     "subtitled by", "captions by",
     "copyright", "all rights reserved",
@@ -47,20 +45,14 @@ HALLUCINATION_EXACT = {
     "inaudible", "indistinct",
     "foreign", "foreign language",
     "no sound", "no audio",
-    "you're welcome",
     "i don't know what to say",
     "so", "and", "but",
-    "okay so", "alright",
+    "okay so",
     # German Whisper noise hallucinations
-    "danke", "danke schön", "danke schon", "tschüss", "tschuss",
-    "wie geht's die", "wie gehts die", "wie geht es dir",
-    "wie geht's", "wie gehts", "hallo wie geht's",
-    "guten tag", "auf wiedersehen", "bis bald",
-    "vielen dank", "herzlich willkommen",
+    "wie geht's die", "wie gehts die",
     "untertitel von", "untertitelung", "untertitel",
     "untertitel der amara.org-community",
     "musik", "beifall", "gelächter", "stille",
-    "bis zum nächsten mal", "bis dann",
 }
 
 # Substrings that indicate hallucination even in longer text
@@ -137,7 +129,6 @@ def _ngram_repetition_score(words: list[str], n: int = 2) -> float:
 
 def _sentence_repetition_score(text: str) -> float:
     """Detect repeated sentences. Returns ratio of most-repeated to total."""
-    # Split on sentence boundaries
     sentences = [s.strip().strip('.,!?;:').lower() for s in re.split(r'[.!?]+', text) if s.strip()]
     if len(sentences) < 2:
         return 0.0
@@ -154,25 +145,7 @@ def filter_hallucination(
     log_prob: Optional[float] = None,
     duration_s: Optional[float] = None,
 ) -> str:
-    """Advanced hallucination filter. Returns cleaned text or '' if hallucinated.
-
-    Parameters
-    ----------
-    text : str
-        Raw ASR transcription output.
-    no_speech_prob : float, optional
-        Whisper's no_speech_probability for the segment (0-1).
-        Higher = more likely silence/noise.
-    log_prob : float, optional
-        Average log probability of the transcription.
-        Lower (more negative) = less confident.
-    duration_s : float, optional
-        Audio duration in seconds. Used for length-based heuristics.
-
-    Returns
-    -------
-    str : Cleaned text, or '' if the text is a hallucination.
-    """
+    """Advanced hallucination filter. Returns cleaned text or '' if hallucinated."""
     if not text or not text.strip():
         return ""
 
@@ -200,15 +173,14 @@ def filter_hallucination(
 
     # ── Layer 3: Exact hallucination match ────────────────────────
     if cleaned in HALLUCINATION_EXACT:
-        # But don't filter if it's a valid short word in context
         if cleaned not in VALID_SHORT:
-            log.info(f"[Filter] Exact hallucination: '{text}'")
+            log.info("[Filter] Exact hallucination: '%s'", text)
             return ""
 
     # ── Layer 4: Substring hallucination match ────────────────────
     for sub in HALLUCINATION_SUBSTRINGS:
         if sub in cleaned:
-            log.info(f"[Filter] Substring hallucination '{sub}': '{text}'")
+            log.info("[Filter] Substring hallucination '%s': '%s'", sub, text)
             return ""
 
     # ── Layer 5: Character entropy (low = repetitive noise) ───────
@@ -216,21 +188,16 @@ def filter_hallucination(
     alpha_text = re.sub(r'[^a-zäöüß]', '', cleaned)
     if len(alpha_text) >= 6:
         entropy = _char_entropy(alpha_text)
-        # Very low entropy + short text = likely noise
-        # Normal English text has entropy ~3.5-4.5
         if entropy < 1.8 and len(words) <= 8:
-            log.info(f"[Filter] Low entropy ({entropy:.2f}): '{text}'")
+            log.info("[Filter] Low entropy (%.2f): '%s'", entropy, text)
             return ""
 
     # ── Layer 6: N-gram repetition ────────────────────────────────
     if len(words) >= 4:
-        # Bigram repetition: "I'm going to I'm going to"
         bigram_score = _ngram_repetition_score(words, n=2)
         if bigram_score > 0.5:
             log.info(f"[Filter] Bigram repetition ({bigram_score:.2f}): '{text}'")
             return ""
-
-        # Trigram repetition: "thank you so much thank you so much"
         if len(words) >= 6:
             trigram_score = _ngram_repetition_score(words, n=3)
             if trigram_score > 0.4:
@@ -271,31 +238,29 @@ def filter_hallucination(
         return ""
 
     # ── Layer 11: Confidence scoring (combine weak signals) ───────
-    # Each signal adds to a "suspicion" score. If total > threshold, reject.
     suspicion = 0.0
 
     if no_speech_prob is not None and no_speech_prob > 0.4:
-        suspicion += no_speech_prob  # 0.4–1.0 adds 0.4–1.0
+        suspicion += no_speech_prob
 
     if log_prob is not None and log_prob < -0.8:
-        suspicion += min(abs(log_prob) * 0.3, 0.5)  # low confidence adds up to 0.5
+        suspicion += min(abs(log_prob) * 0.3, 0.5)
 
     if duration_s is not None and duration_s < 0.5 and len(words) > 4:
-        # Many words in very short audio = suspicious
         suspicion += 0.3
 
     if len(alpha_text) >= 6:
         entropy = _char_entropy(alpha_text)
         if entropy < 2.5:
-            suspicion += (2.5 - entropy) * 0.2  # up to 0.5 for very low entropy
+            suspicion += (2.5 - entropy) * 0.2
 
-    # Check if any word partially matches known hallucinations
-    halluc_word_hits = sum(1 for w in words if any(w in h for h in HALLUCINATION_EXACT))
-    if len(words) > 0:
-        suspicion += (halluc_word_hits / len(words)) * 0.3
+    long_words = [w for w in words if len(w) >= 4]
+    halluc_word_hits = sum(1 for w in long_words if any(w in h for h in HALLUCINATION_EXACT))
+    if len(long_words) > 0:
+        suspicion += (halluc_word_hits / len(long_words)) * 0.3
 
     if suspicion > 1.0:
-        log.info(f"[Filter] High suspicion ({suspicion:.2f}): '{text}'")
+        log.info("[Filter] High suspicion (%.2f): '%s' (nsp=%s, halluc_hits=%d/%d)", suspicion, text, no_speech_prob, halluc_word_hits, len(long_words))
         return ""
 
     # ── Passed all filters ────────────────────────────────────────

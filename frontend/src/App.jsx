@@ -140,9 +140,24 @@ export default function App() {
     });
   }, []);
   const handleGhostText = useCallback((t) => setGhostText(t || ""), []);
+  const idleTimerRef = useRef(null);
   const handleStateChange = useCallback((s) => {
     if (s.startsWith("error:")) {
       pushToast("error", s.slice(6));
+      return;
+    }
+    // Cancel any pending idle transition when a new state arrives
+    if (idleTimerRef.current) { clearTimeout(idleTimerRef.current); idleTimerRef.current = null; }
+    // When backend says idle, delay transition until audio finishes playing
+    if (s === "idle") {
+      const rem = audioStreamRef.current?.getPlaybackRemaining?.() ?? 0;
+      const delay = Math.max(rem * 1000 + 300, 100);
+      idleTimerRef.current = setTimeout(() => {
+        idleTimerRef.current = null;
+        setPipelineState("idle");
+        setGhostText("");
+        setSubtitle({ text: "", language: "" });
+      }, delay);
       return;
     }
     setPipelineState(s);

@@ -119,7 +119,12 @@ export default function useAudioStream(sendAudio) {
     micAnalyserRef.current = analyser;
 
     source.connect(processor);
-    processor.connect(ctx.destination); // required for onaudioprocess to fire
+    // Connect through a muted gain node — ScriptProcessor requires a destination
+    // connection to fire onaudioprocess, but we must NOT send mic audio to speakers
+    const muteNode = ctx.createGain();
+    muteNode.gain.value = 0;
+    processor.connect(muteNode);
+    muteNode.connect(ctx.destination);
 
     ctxRef.current = ctx;
     streamRef.current = stream;
@@ -191,6 +196,7 @@ export default function useAudioStream(sendAudio) {
     const startAt = Math.max(now, nextPlayTime.current);
     src.start(startAt);
     nextPlayTime.current = startAt + buf.duration;
+
   }, []);
 
   // ── Stop playback (for interrupts) ─────────────────────────
@@ -209,5 +215,12 @@ export default function useAudioStream(sendAudio) {
     }
   }, []);
 
-  return { micActive, startMic, stopMic, playPcm, stopPlayback };
+  // Returns seconds of audio still queued for playback
+  const getPlaybackRemaining = useCallback(() => {
+    const ctx = playCtxRef.current;
+    if (!ctx || ctx.state === "closed") return 0;
+    return Math.max(0, nextPlayTime.current - ctx.currentTime);
+  }, []);
+
+  return { micActive, startMic, stopMic, playPcm, stopPlayback, getPlaybackRemaining };
 }

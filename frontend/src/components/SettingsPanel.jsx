@@ -148,9 +148,9 @@ export default function SettingsPanel({ open, onClose, theme, onToggleTheme, lan
               <div className="flex flex-col gap-2" style={{ marginTop: 8 }}>
                 {[
                   { icon: <Volume2 size={14} />, label: "VAD", desc: "Silero Voice Activity", color: "16,185,129" },
-                  { icon: <Globe size={14} />, label: "ASR", desc: "Groq Whisper Large v3", color: "6,182,212" },
-                  { icon: <Zap size={14} />, label: "LLM", desc: "Groq Llama 3.3 70B", color: "244,114,182" },
-                  { icon: <Volume2 size={14} />, label: "TTS", desc: "Silero Multi-lang", color: "245,158,11" },
+                  { icon: <Globe size={14} />, label: "ASR", desc: "Whisper Speech-to-Text", color: "6,182,212" },
+                  { icon: <Zap size={14} />, label: "LLM", desc: "AI Language Model", color: "244,114,182" },
+                  { icon: <Volume2 size={14} />, label: "TTS", desc: "Edge Neural Voice", color: "245,158,11" },
                 ].map((item, i) => (
                   <div key={i} className="flex items-center gap-3" style={{
                     padding: "10px 12px", borderRadius: 10,

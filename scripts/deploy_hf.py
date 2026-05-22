@@ -6,7 +6,6 @@ Stages files into a temp folder, then uploads in one commit.
 import fnmatch
 import os
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 
@@ -50,12 +49,19 @@ def main():
     stage = Path(tempfile.mkdtemp(prefix="hf_stage_"))
     print(f"[1/3] Staging files to {stage}...")
 
-    # README.md (from HF_README.md)
-    shutil.copy2(PROJECT / "HF_README.md", stage / "README.md")
+    # README.md (prefer HF_README.md if it exists, else use README.md)
+    hf_readme = PROJECT / "HF_README.md"
+    fallback_readme = PROJECT / "README.md"
+    if hf_readme.exists():
+        shutil.copy2(hf_readme, stage / "README.md")
+    elif fallback_readme.exists():
+        shutil.copy2(fallback_readme, stage / "README.md")
+    else:
+        print("  WARNING: No README.md found")
     print("  README.md")
 
     # Root files
-    for f in ["Dockerfile", "requirements.txt", "requirements-cloud.txt", ".dockerignore"]:
+    for f in ["Dockerfile", "requirements.txt", "requirements_cloud.txt", ".dockerignore"]:
         src = PROJECT / f
         if src.exists():
             shutil.copy2(src, stage / f)
@@ -87,7 +93,7 @@ def main():
         repo_id=REPO_ID,
         repo_type=REPO_TYPE,
         folder_path=str(stage),
-        commit_message="Deploy: Full diagnosis — fix stale closures, session cleanup, TTS sample rate, clear() reset, playback gain",
+        commit_message="Deploy: update",
         delete_patterns=["*"],  # remove old files not in this upload
     )
 
@@ -97,9 +103,9 @@ def main():
 
     print(f"\n{'='*60}")
     print(f"  DEPLOYED: https://huggingface.co/spaces/{REPO_ID}")
-    print(f"  LIVE URL: https://ilyass1-starch.hf.space")
-    print(f"{'='*60}")
-    print(f"\nDocker build will start automatically (~10 min).")
+    print(f"  LIVE URL: https://{REPO_ID.replace('/', '-')}.hf.space")
+    print("=" * 60)
+    print("\nDocker build will start automatically (~10 min).")
     print(f"Set GROQ_API_KEY in: https://huggingface.co/spaces/{REPO_ID}/settings")
 
 

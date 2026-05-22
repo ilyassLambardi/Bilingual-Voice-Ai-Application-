@@ -13,7 +13,8 @@ venv/
 env/
 
 # IDE
-.vscode/
+# .vscode/ is tracked for shared workspace settings (interpreter, launch configs)
+!.vscode/
 .idea/
 *.swp
 *.swo
@@ -58,3 +59,13 @@ models/voice_reference/
 
 # Logs
 *.log
+
+# Non-project files
+*.docx
+*.pptx
+!Bilingual_AI_Voice_Assistant.pptx
+*.ipynb
+!defense_slides.ipynb
+thesis_text.txt
+REVISION_GUIDE.txt
+REVISED_THESIS_SECTIONS.txt

@@ -11,16 +11,15 @@ Same async `stream()` interface as the local LLM providers.
 import asyncio
 import logging
 import os
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import AsyncIterator, Optional
 
+from .llm_common import clean_response, build_context_hint
+
 log = logging.getLogger("s2s.llm")
 
 _pool = ThreadPoolExecutor(max_workers=2)
-
-# No phrase filtering — unrestricted output
 
 
 class GroqLLM:
@@ -45,8 +44,8 @@ class GroqLLM:
         self._history: list[dict] = []
 
         # Validate connection
-        print(f"[LLM] Groq API -> {model}")
-        print(f"[LLM] Ready.")
+        log.info("[LLM] Groq API -> %s", model)
+        log.info("[LLM] Ready.")
 
     async def stream(
         self,
@@ -81,7 +80,7 @@ class GroqLLM:
                             loop.call_soon_threadsafe(queue.put_nowait, token)
 
                     # Store in history
-                    clean = self._clean_response(full)
+                    clean = clean_response(full)
                     self._history.append({"role": "user", "content": user_text})
                     self._history.append({"role": "assistant", "content": clean})
                     if len(self._history) > 20:
@@ -126,63 +125,13 @@ class GroqLLM:
             yield token
 
     def _build_messages(self, user_text: str, lang: str = "en") -> list[dict]:
-        if lang == "de":
-            context_hint = (
-                "[The user is speaking GERMAN. Respond fully in German. "
-                "Use natural German speech patterns and fillers.]\n"
-            )
-        else:
-            context_hint = (
-                "[The user is speaking ENGLISH. Respond in English. "
-                "Do NOT use any German unless the user explicitly asks about German words.]\n"
-            )
-
-        # Detect teacher mode intent
-        lower = user_text.lower()
-        teacher_triggers = [
-            "what does", "what is", "was bedeutet", "was heißt",
-            "was ist", "what do you mean by", "explain the word",
-            "meaning of", "bedeutung von",
-        ]
-        is_teacher = any(t in lower for t in teacher_triggers)
-        if is_teacher:
-            context_hint += (
-                "[TEACHER MODE ACTIVE] The user is asking about a word. "
-                "Structure your response as: "
-                "1) Explain nuance/feeling in the QUESTION language. "
-                "2) Give 2-3 natural example sentences in the OTHER language. "
-                "3) Brief cultural context in the question language. "
-                "Keep it conversational, not like a textbook."
-            )
-
+        context_hint = build_context_hint(lang, user_text)
         sys_msg = f"{self.system_prompt}\n{context_hint}"
         messages = [{"role": "system", "content": sys_msg}]
         # Include conversation history for context
         messages.extend(self._history[-20:])
         messages.append({"role": "user", "content": user_text})
         return messages
-
-    @staticmethod
-    def _clean_response(text: str) -> str:
-        """Minimal cleanup -- preserve full response."""
-        if not text:
-            return "Hmm, I didn't catch that."
-
-        if text.startswith('"') and text.endswith('"'):
-            text = text[1:-1]
-        text = re.sub(r'^[-\*]\s*', '', text).strip()
-
-        # Ensure it ends with punctuation
-        # Use sentence-boundary regex to avoid cutting at decimals/abbreviations
-        if text and text[-1] not in '.!?':
-            # Find last sentence-ending punctuation followed by space or end
-            match = list(re.finditer(r'[.!?](?:\s|$)', text))
-            if match and match[-1].start() > 10:
-                text = text[:match[-1].start() + 1]
-            else:
-                text = text.rstrip(',;: ') + '.'
-
-        return text
 
     def clear_history(self):
         self._history.clear()

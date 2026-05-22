@@ -25,6 +25,13 @@ accelerate>=0.25.0
 sentencepiece>=0.1.99
 # llama-cpp-python>=0.2.56         # Optional: GGUF models (install manually for GPU)
 
+# ── Language detection ─────────────────────────────────
+langid>=1.1.6                      # Statistical language identification (EN/DE)
+
+# ── Audio processing (local mode) ─────────────────────
+scipy>=1.11.0                      # Signal processing (filters, resampling)
+noisereduce>=3.0.0                 # Spectral-gate noise reduction for VAD
+
 # ── TTS / VAD (always local — lightweight) ──────────────
 # Silero TTS + VAD loaded via torch.hub or local .pt/.jit files
 edge-tts>=7.0.0                    # Microsoft Edge Neural TTS (cloud, free)

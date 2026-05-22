@@ -1,9 +1,9 @@
-"""Resumable download for whisper large-v3-turbo model.
+"""Resumable download for Whisper small model.
 
-Run:  python download_model.py
+Run:  python scripts/download_models.py
 
 It will resume from where it left off if interrupted.
-Once complete, `whisper.load_model('large-v3-turbo')` will use the cached file.
+Once complete, `whisper.load_model('small')` will use the cached file.
 """
 
 import hashlib

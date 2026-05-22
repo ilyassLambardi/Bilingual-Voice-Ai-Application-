@@ -1,0 +1,9 @@
+{
+  "include": ["backend", "scripts"],
+  "extraPaths": ["backend"],
+  "pythonVersion": "3.10",
+  "pythonPlatform": "Windows",
+  "typeCheckingMode": "off",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none"
+}

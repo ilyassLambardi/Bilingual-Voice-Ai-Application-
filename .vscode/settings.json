@@ -1,0 +1,59 @@
+{
+  "python.defaultInterpreterPath": "C:\\Users\\ILYASS\\anaconda3\\envs\\ILjourney\\python.exe",
+  "python.condaPath": "C:\\Users\\ILYASS\\anaconda3\\Scripts\\conda.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.terminal.activateEnvInCurrentTerminal": true,
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/backend",
+    "${workspaceFolder}/scripts"
+  ],
+  "python.analysis.autoImportCompletions": true,
+  "python.analysis.typeCheckingMode": "off",
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingImports": "none",
+    "reportMissingModuleSource": "none"
+  },
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["backend"],
+
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": false,
+    "editor.tabSize": 4
+  },
+  "[javascript]":       { "editor.defaultFormatter": "esbenp.prettier-vscode", "editor.tabSize": 2 },
+  "[javascriptreact]":  { "editor.defaultFormatter": "esbenp.prettier-vscode", "editor.tabSize": 2 },
+  "[json]":             { "editor.defaultFormatter": "esbenp.prettier-vscode", "editor.tabSize": 2 },
+  "[markdown]":         { "editor.wordWrap": "on" },
+
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.pytest_cache": true,
+    "**/node_modules": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/node_modules": true,
+    "**/models": true,
+    "**/dist": true,
+    "**/*.zip": true,
+    "**/*.docx": true
+  },
+  "files.associations": { "*.env.example": "properties" },
+
+  "terminal.integrated.cwd": "${workspaceFolder}",
+  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "terminal.integrated.env.windows": {
+    "CONDA_DEFAULT_ENV": "ILjourney"
+  },
+
+  "ruff.configurationPreference": "filesystemFirst",
+  "ruff.lint.enable": true,
+
+  "js/ts.validate.enabled": false,
+
+  "editor.rulers": [100],
+  "editor.renderWhitespace": "boundary",
+  "editor.bracketPairColorization.enabled": true
+}

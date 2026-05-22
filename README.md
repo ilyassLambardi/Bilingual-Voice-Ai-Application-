@@ -174,7 +174,7 @@ Alex (German):  "Also, Machine Learning ist im Grunde ein Teilgebiet der KI,
 
 ### Prerequisites
 
-- **Python** >= 3.10
+- **Conda** (Anaconda or Miniconda)
 - **Node.js** >= 18
 - **CUDA GPU** recommended (~4 GB VRAM) — falls back to CPU automatically
 
@@ -184,8 +184,13 @@ Alex (German):  "Also, Machine Learning ist im Grunde ein Teilgebiet der KI,
 git clone https://github.com/YOUR_USERNAME/bilingual-voice-ai.git
 cd bilingual-voice-ai
 
-# Backend
-pip install -r requirements.txt
+# Create conda environment (one-time)
+conda env create -f environment.yml
+conda activate ILjourney
+
+# Or if you already have the env, just install pip deps:
+# conda activate ILjourney
+# pip install -r requirements.txt
 
 # Frontend
 cd frontend && npm install && cd ..
@@ -201,6 +206,8 @@ cp backend/.env.example backend/.env
 ### 3. Run
 
 ```bash
+conda activate ILjourney
+
 # Option A: Production (backend serves frontend)
 cd frontend && npm run build && cd ..
 python backend/main.py
@@ -210,6 +217,8 @@ python backend/main.py
 python backend/main.py          # Terminal 1 → port 8000
 cd frontend && npm run dev      # Terminal 2 → port 5173
 ```
+
+> **VS Code users:** Open the project folder and press `F5` or use `Ctrl+Shift+P` → *Tasks: Run Task* → **Dev: Run Full Stack**. The interpreter and conda env are pre-configured in `.vscode/`.
 
 ### 4. Use
 
@@ -245,7 +254,6 @@ All settings are configurable via environment variables in `backend/.env`:
 | `S2S_MODE` | `cloud` | `cloud` (Groq API) or `local` (GPU inference) |
 | `GROQ_API_KEY` | — | API key from [console.groq.com](https://console.groq.com) |
 | `LLM_MODEL` | `llama-3.3-70b-versatile` | Cloud LLM model |
-| `LLM_MAX_TOKENS` | `150` | Max response tokens |
 | `TTS_ENGINE` | `silero` | `silero` or `xtts` (XTTSv2) |
 | `ASR_MODEL` | `whisper-large-v3` | Cloud ASR model |
 

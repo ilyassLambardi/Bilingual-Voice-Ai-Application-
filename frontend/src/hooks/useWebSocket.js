@@ -16,7 +16,6 @@ let _reconnectTimer = null;
 export default function useWebSocket({ onAudio, onTranscript, onStateChange, onGhostText, onBackchannel }) {
   const wsRef = useRef(null);
   const [connected, setConnected] = useState(false);
-  const [pipelineState, setPipelineState] = useState("idle");
 
   // Store callbacks in refs so WebSocket handler always sees latest versions
   // (avoids stale closure bug where ws.onmessage captures old callbacks)
@@ -46,7 +45,6 @@ export default function useWebSocket({ onAudio, onTranscript, onStateChange, onG
     ws.onclose = (event) => {
       console.log("[WS] Disconnected, code:", event.code, "reason:", event.reason);
       setConnected(false);
-      setPipelineState("idle");
       // Auto-reconnect after disconnect (exponential backoff)
       if (event.code !== 1000) {
         const delay = Math.min(2000 * Math.pow(1.5, _reconnectAttempts), 15000);
@@ -69,7 +67,6 @@ export default function useWebSocket({ onAudio, onTranscript, onStateChange, onG
           const msg = JSON.parse(event.data);
           switch (msg.type) {
             case "state":
-              setPipelineState(msg.state);
               cb.onStateChange?.(msg.state);
               break;
             case "transcript":
@@ -137,7 +134,6 @@ export default function useWebSocket({ onAudio, onTranscript, onStateChange, onG
 
   return {
     connected,
-    pipelineState,
     connect,
     disconnect,
     sendAudio,

@@ -1,0 +1,21 @@
+# Ruff linter configuration
+[lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E402",   # import not at top — intentional (logger setup, try/except fallbacks)
+    "E501",   # line too long (handled by editor rulers)
+    "E701",   # multiple statements on one line (colon) — compact style in VAD/pipeline
+    "E702",   # multiple statements on one line (semicolon) — compact style
+    "E731",   # lambda assignment — used for inline helpers
+    "E741",   # ambiguous variable name
+    "W291",   # trailing whitespace
+    "W293",   # whitespace before ':'
+    "F401",   # unused import — some re-exports in __init__.py
+]
+
+[lint.per-file-ignores]
+"backend/pipeline/local/__init__.py" = ["F401"]
+"backend/pipeline/cloud/__init__.py" = ["F401"]
+"backend/pipeline/__init__.py" = ["F401"]
+"backend/__init__.py" = ["F401"]
+"scripts/__init__.py" = ["F401"]

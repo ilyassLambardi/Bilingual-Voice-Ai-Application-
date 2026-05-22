@@ -13,6 +13,9 @@ export default defineConfig({
       "/health": {
         target: "http://localhost:8000",
       },
+      "/api": {
+        target: "http://localhost:8000",
+      },
     },
   },
 });

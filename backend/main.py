@@ -4,10 +4,10 @@ FastAPI WebSocket server for the Speech-to-Speech pipeline.
 This is the application entry point that wires together the four
 architectural modules:
 
-    Module 1 — I/O:         ``pipeline/io_handler.py``
-    Module 2 — Processing:  ``pipeline/vad.py``, ``asr*.py``, ``llm*.py``, ``tts*.py``
-    Module 3 — State:       ``pipeline/session_state.py``, ``pipeline/memory.py``
-    Module 4 — Scheduling:  ``pipeline/manager.py``
+    pipeline/cloud/   Cloud API pipeline (Groq ASR/LLM, Edge TTS)
+    pipeline/local/   Local on-device pipeline (Whisper, GGUF LLM, Silero/Edge TTS)
+
+Each subpackage contains its own manager, io_handler, and memory modules.
 
 Supports two modes:
   cloud  — Groq API for LLM + ASR, per-session managers (multi-user)
@@ -30,6 +30,8 @@ Server → Client:
 """
 
 import asyncio
+import builtins
+import collections
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -42,20 +44,38 @@ from fastapi.responses import FileResponse
 import uvicorn
 
 from config import config
-from pipeline.manager import PipelineManager
-from pipeline.io_handler import (
-    parse_inbound,
-    InboundMessageType,
-    make_safe_send,
-    build_state_message,
-)
+
+# ── Mode-specific imports ─────────────────────────────────────────────
+# Each mode is a fully self-contained subpackage with its own manager,
+# io_handler, memory, and processing modules.
+if config.mode == "cloud":
+    from pipeline.cloud.manager import PipelineManager
+    from pipeline.cloud.io_handler import (
+        parse_inbound, InboundMessageType, make_safe_send, build_state_message,
+    )
+else:
+    from pipeline.local.manager import PipelineManager
+    from pipeline.local.io_handler import (
+        parse_inbound, InboundMessageType, make_safe_send, build_state_message,
+    )
 
 log = logging.getLogger("s2s")
 
 # ── Ring buffer for pipeline logs (viewable via /api/logs) ───────────
-import collections
-
 _log_buf = collections.deque(maxlen=300)
+
+class _RingBufferHandler(logging.Handler):
+    """Captures log messages to the in-memory ring buffer for /api/logs."""
+    def emit(self, record: logging.LogRecord) -> None:
+        msg = self.format(record)
+        if msg.strip():
+            _log_buf.append(msg.rstrip())
+
+_ring_handler = _RingBufferHandler()
+_ring_handler.setFormatter(logging.Formatter("%(message)s"))
+logging.getLogger().addHandler(_ring_handler)
+logging.getLogger().setLevel(logging.INFO)
+
 _original_print = print
 
 def _capturing_print(*args, **kwargs):
@@ -70,7 +90,6 @@ def _capturing_print(*args, **kwargs):
     if msg.strip():
         _log_buf.append(msg.rstrip())
 
-import builtins
 builtins.print = _capturing_print
 
 _MAX_SESSIONS = 10  # connection limit
@@ -90,22 +109,22 @@ async def lifespan(app: FastAPI):
     global _shared_manager
 
     if config.mode == "local":
-        print("[Startup] Local mode -- loading models (this may take a minute) ...")
+        log.info("[Startup] Local mode -- loading models (this may take a minute) ...")
         _shared_manager = PipelineManager(config)
         await _shared_manager.load_models()
     else:
         # Cloud mode: do a quick preload of VAD + TTS (shared, lightweight)
         # LLM and ASR are API calls, loaded per-session
-        print("[Startup] Cloud mode -- preloading VAD + TTS ...")
+        log.info("[Startup] Cloud mode -- preloading VAD + TTS ...")
         warmup = PipelineManager(config)
         await warmup.load_models()
         _shared_manager = warmup  # keep for sharing TTS cache
 
-    print("[Startup] Ready -- accepting connections.")
+    log.info("[Startup] Ready -- accepting connections.")
     yield
-    print("[Shutdown] Cleaning up sessions ...")
+    log.info("[Shutdown] Cleaning up sessions ...")
     _sessions.clear()
-    print("[Shutdown] Server stopped.")
+    log.info("[Shutdown] Server stopped.")
 
 
 app = FastAPI(title="S2S Voice Backend", lifespan=lifespan)
@@ -187,10 +206,10 @@ async def diagnose():
 
     # Test 3: VAD with synthetic audio
     try:
-        from pipeline.vad import VADProcessor
+        from pipeline.local.vad import VADProcessor
         vad = VADProcessor(threshold=0.45, min_speech_ms=200, min_silence_ms=700, sample_rate=16000)
         noise = np.random.randn(512).astype(np.float32) * 0.001
-        is_speaking, utt = vad.process_chunk(noise)
+        _is_speaking, _utt = vad.process_chunk(noise)
         results["tests"]["vad"] = {"status": "ok", "model_loaded": True}
     except Exception as e:
         results["tests"]["vad"] = {"status": "error", "detail": str(e)}
@@ -313,9 +332,15 @@ async def ws_endpoint(ws: WebSocket):
         await ws.close(code=1013, reason="Too many connections")
         return
 
+    # Local mode: shared manager supports only one concurrent user.
+    # Reject new connections if one is already active.
+    if config.mode == "local" and _sessions:
+        await ws.close(code=1013, reason="Local mode supports one connection at a time")
+        return
+
     await ws.accept()
     session_id = str(uuid.uuid4())[:8]
-    log.info(f"[WS] Client {session_id} connected.")
+    log.info("[WS] Client %s connected.", session_id)
 
     # Get or create a session manager
     if config.mode == "cloud":
@@ -324,6 +349,7 @@ async def ws_endpoint(ws: WebSocket):
         _sessions[session_id] = mgr
     else:
         mgr = _shared_manager
+        _sessions[session_id] = mgr  # Track local session for connection limiting
 
     # Module 1 (I/O): Create send closure ONCE per connection
     send = make_safe_send(ws)
@@ -345,7 +371,7 @@ async def ws_endpoint(ws: WebSocket):
                 try:
                     await mgr.handle_audio_chunk(msg.audio_bytes, send)
                 except Exception as e:
-                    log.error(f"[WS:{session_id}] Audio error: {e}")
+                    log.error("[WS:%s] Audio error: %s", session_id, e)
 
             elif msg.type == InboundMessageType.CLEAR:
                 await mgr.clear(send)
@@ -357,17 +383,20 @@ async def ws_endpoint(ws: WebSocket):
                 _apply_session_config(msg.config_data, mgr)
 
     except WebSocketDisconnect:
-        log.info(f"[WS:{session_id}] Client disconnected.")
+        log.info("[WS:%s] Client disconnected.", session_id)
+    except RuntimeError as e:
+        # "Cannot call receive once a disconnect message has been received"
+        if "disconnect" in str(e).lower():
+            log.info("[WS:%s] Client already disconnected.", session_id)
+        else:
+            log.error("[WS:%s] Runtime error: %s", session_id, e)
     except Exception as e:
-        log.error(f"[WS:{session_id}] Error: {e}")
+        log.error("[WS:%s] Error: %s", session_id, e)
     finally:
         # Cancel any running pipeline tasks to avoid orphaned work
         await _cleanup_session(mgr)
         _sessions.pop(session_id, None)
-        log.info(f"[WS:{session_id}] Session ended. Active: {len(_sessions)}")
-
-
-# NOTE: _make_send moved to Module 1 (pipeline/io_handler.py) as make_safe_send
+        log.info("[WS:%s] Session ended. Active: %d", session_id, len(_sessions))
 
 
 async def _cleanup_session(mgr: PipelineManager):
@@ -395,14 +424,17 @@ async def _cleanup_session(mgr: PipelineManager):
             mgr._audio_buffer.clear()
 
         # Close LTM connection to prevent SQLite leaks
-        ltm = getattr(mgr, '_ltm', None)
-        if ltm:
-            try:
-                ltm.close()
-            except Exception:
-                pass
+        # BUT only for cloud mode (per-session managers).
+        # In local mode the manager is shared — never close its LTM.
+        if config.mode == "cloud":
+            ltm = getattr(mgr, '_ltm', None)
+            if ltm:
+                try:
+                    ltm.close()
+                except Exception:
+                    pass
     except Exception as e:
-        log.warning(f"[WS] Cleanup error: {e}")
+        log.warning("[WS] Cleanup error: %s", e)
 
 
 def _apply_session_config(data: dict, mgr: PipelineManager):

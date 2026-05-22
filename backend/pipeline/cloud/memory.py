@@ -6,14 +6,17 @@ context.  Uses lightweight TF-IDF vectors for semantic retrieval
 (no extra model required).
 """
 
+import logging
 import os
 import sqlite3
 from collections import Counter
 from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger(__name__)
 
-_DB_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+
+_DB_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
 _DB_PATH = _DB_DIR / "memory.db"
 
 _STOPWORDS = {
@@ -43,7 +46,7 @@ class LongTermMemory:
         self._conn.execute("PRAGMA busy_timeout=5000")  # wait up to 5s on lock
         self._init_db()
         count = self._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-        print(f"[LTM] Ready -- {count} memories in {self._db_path}")
+        logger.info("[LTM] Ready -- %d memories in %s", count, self._db_path)
 
     def _init_db(self):
         self._conn.executescript("""
@@ -55,11 +58,6 @@ class LongTermMemory:
                 language TEXT DEFAULT 'en',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 relevance_count INTEGER DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS user_prefs (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
             CREATE INDEX IF NOT EXISTS idx_memories_keywords ON memories(keywords);
@@ -84,7 +82,7 @@ class LongTermMemory:
             self._conn.commit()
             self._prune_if_needed()
         except sqlite3.Error as e:
-            print(f"[LTM] Store conversation failed: {e}")
+            logger.warning("[LTM] Store conversation failed: %s", e)
 
     def _prune_if_needed(self):
         """Delete oldest, least-relevant memories when count exceeds limit."""
@@ -97,18 +95,7 @@ class LongTermMemory:
                 ")", (excess,)
             )
             self._conn.commit()
-            print(f"[LTM] Pruned {excess} old memories (kept {self._MAX_MEMORIES})")
-
-    def store_preference(self, key: str, value: str):
-        """Store or update a user preference."""
-        try:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO user_prefs (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
-                (key, value),
-            )
-            self._conn.commit()
-        except sqlite3.Error as e:
-            print(f"[LTM] Store preference failed: {e}")
+            logger.info("[LTM] Pruned %d old memories (kept %d)", excess, self._MAX_MEMORIES)
 
     def store_summary(self, summary: str, lang: str = "en"):
         """Store a session summary."""
@@ -120,7 +107,7 @@ class LongTermMemory:
             )
             self._conn.commit()
         except sqlite3.Error as e:
-            print(f"[LTM] Store summary failed: {e}")
+            logger.warning("[LTM] Store summary failed: %s", e)
 
     # ── Retrieve ───────────────────────────────────────────────────────
 
@@ -158,19 +145,6 @@ class LongTermMemory:
 
         return [content for _, _, content in scored[:limit]]
 
-    def get_preferences(self) -> dict[str, str]:
-        """Return all stored user preferences."""
-        rows = self._conn.execute("SELECT key, value FROM user_prefs").fetchall()
-        return {row["key"]: row["value"] for row in rows}
-
-    def get_recent_summaries(self, limit: int = 3) -> list[str]:
-        """Return recent session summaries."""
-        rows = self._conn.execute(
-            "SELECT content FROM memories WHERE category = 'summary' ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [row["content"] for row in rows]
-
     # ── Session management ─────────────────────────────────────────────
 
     def summarize_and_store(self, conversation_history: list[dict]):
@@ -186,7 +160,7 @@ class LongTermMemory:
         n_turns = len(conversation_history) // 2
         summary = f"Session with {n_turns} exchanges. Topics: {', '.join(topic_words)}"
         self.store_summary(summary)
-        print(f"[LTM] Stored session summary: {summary[:80]}...")
+        logger.info("[LTM] Stored session summary: %s...", summary[:80])
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
