@@ -88,8 +88,8 @@ class PipelineManager:
             try: self._tts = EdgeTTSProcessor(sample_rate=cfg.tts_sample_rate)
             except Exception: self._tts = TTSProcessor(sample_rate=cfg.tts_sample_rate)
         else: self._tts = TTSProcessor(sample_rate=cfg.tts_sample_rate)
-        try: self._ltm = LongTermMemory()
-        except Exception: self._ltm = None
+        # Memory disabled — every session is fresh
+        self._ltm = None
         self._models_ready = True
         logger.info("[Manager] All models ready!")
 
@@ -203,7 +203,8 @@ class PipelineManager:
         prev = self._lang_history[-3:]
         self._lang_history.append(lang)
         self._lang_history = self._lang_history[-self._lang_history_max:]
-        if prev and all(l != lang for l in prev) and len(prev) >= 2:
+        if prev and prev[-1] != lang:
+            if self._llm: self._llm.clear_history()
             try: await send(json.dumps({"type": "language_shift", "from": prev[-1], "to": lang}))
             except Exception: pass
 

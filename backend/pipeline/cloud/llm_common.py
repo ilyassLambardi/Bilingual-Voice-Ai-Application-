@@ -38,8 +38,9 @@ def build_context_hint(lang: str, user_text: str) -> str:
         )
     else:
         context_hint = (
-            "[The user is speaking ENGLISH. Respond in English. "
-            "Do NOT use any German unless the user explicitly asks about German words.]\n"
+            "[LANGUAGE: ENGLISH ONLY. You MUST respond entirely in English. "
+            "Do NOT use ANY German words, phrases, or sentences. "
+            "Even if previous messages were in German, respond ONLY in English now.]\n"
         )
 
     lower = user_text.lower()

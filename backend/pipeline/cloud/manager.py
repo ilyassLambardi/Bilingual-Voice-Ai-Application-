@@ -451,9 +451,12 @@ class PipelineManager:
         if len(self._lang_history) > self._lang_history_max:
             self._lang_history = self._lang_history[-self._lang_history_max:]
 
-        # Detect shift: if last 3 were all one lang and now it's different
-        if prev_langs and all(l != lang for l in prev_langs) and len(prev_langs) >= 2:
+        # Detect shift: if previous message was a different lang
+        if prev_langs and prev_langs[-1] != lang:
             logger.info("[Lang] Language shift detected: %s -> %s", prev_langs[-1], lang)
+            # Clear LLM history so prior language doesn't bleed over
+            if self._llm:
+                self._llm.clear_history()
             try:
                 await send(json.dumps({
                     "type": "language_shift",
