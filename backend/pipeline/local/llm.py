@@ -58,8 +58,11 @@ class LLMProcessor:
         while (tok := await q.get()) is not None: yield tok
 
     def _build_messages(self, text: str, lang="en") -> list[dict]:
-        return ([{"role":"system","content":f"{self.system_prompt}\n\n{build_context_hint(lang, text)}"}]
-                + self._history[-20:] + [{"role":"user","content":text}])
+        msgs = [{"role":"system","content":self.system_prompt}]
+        msgs += self._history[-20:]
+        msgs.append({"role":"system","content":build_context_hint(lang, text)})
+        msgs.append({"role":"user","content":text})
+        return msgs
 
     def clear_history(self): self._history.clear()
 
@@ -122,7 +125,7 @@ class FallbackLLM:
         while (tok := await q.get()) is not None: yield tok
 
     def _build_messages(self, text: str, lang="en") -> list[dict]:
-        msgs = [{"role":"system","content":f"{self.system_prompt}\n{build_context_hint(lang, text)}"}]
+        msgs = [{"role":"system","content":self.system_prompt}]
         if lang == "de":
             msgs += [{"role":"user","content":"Hallo, wie geht's dir?"},
                      {"role":"assistant","content":"Hey, mir geht's gut! Was machst du so?"}]
@@ -130,7 +133,9 @@ class FallbackLLM:
             msgs += [{"role":"user","content":"Hey, how's it going?"},
                      {"role":"assistant","content":"Pretty good! What've you been up to?"}]
         msgs += self._history[-8:]
-        msgs.append({"role":"user","content": f"{text}\n[Antworte auf Deutsch]" if lang=="de" else text})
+        # Language enforcement AFTER history — prevents prior German from bleeding over
+        msgs.append({"role":"system","content":build_context_hint(lang, text)})
+        msgs.append({"role":"user","content":text})
         return msgs
 
     def clear_history(self): self._history.clear()

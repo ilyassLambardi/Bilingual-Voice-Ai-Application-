@@ -126,10 +126,11 @@ class GroqLLM:
 
     def _build_messages(self, user_text: str, lang: str = "en") -> list[dict]:
         context_hint = build_context_hint(lang, user_text)
-        sys_msg = f"{self.system_prompt}\n{context_hint}"
-        messages = [{"role": "system", "content": sys_msg}]
+        messages = [{"role": "system", "content": self.system_prompt}]
         # Include conversation history for context
         messages.extend(self._history[-20:])
+        # Language enforcement AFTER history — prevents prior German from bleeding over
+        messages.append({"role": "system", "content": context_hint})
         messages.append({"role": "user", "content": user_text})
         return messages
 
