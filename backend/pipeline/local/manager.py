@@ -255,7 +255,7 @@ class PipelineManager:
             if self._llm:
                 t_llm = time.time(); tok_count = 0
                 logger.info("[LLM] Starting generation...")
-                async for tok in self._llm.stream(text, max_tokens=min(self.config.llm_max_tokens, 80),
+                async for tok in self._llm.stream(text, max_tokens=min(self.config.llm_max_tokens, 120),
                                                    temperature=self.config.llm_temperature, lang=lang):
                     if self._interrupt.is_set(): break
                     buf += tok; full += tok; tok_count += 1
@@ -264,8 +264,8 @@ class PipelineManager:
                     if any(buf.rstrip().endswith(p) for p in ".?!") or (len(buf) > 50 and any(buf.rstrip().endswith(p) for p in ",;:")):
                         idx += 1; await q.put((buf.strip(), lang, idx)); buf = ""
                         logger.info("[TTS] Sentence %d queued: '%s'", idx, full[-60:])
-                        if idx >= 4: break
-                if buf.strip() and not self._interrupt.is_set() and idx < 4:
+                        if idx >= 6: break
+                if buf.strip() and not self._interrupt.is_set() and idx < 6:
                     idx += 1; await q.put((buf.strip(), lang, idx))
                 logger.info("[LLM] Done: %d tokens in %.1fs (%.1f tok/s)", tok_count, time.time()-t_llm,
                             tok_count / max(time.time()-t_llm, 0.01))
