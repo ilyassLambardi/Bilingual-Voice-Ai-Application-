@@ -139,19 +139,12 @@ function MsgBubble({ msg, isDark }) {
         </AnimatePresence>
       </div>
 
-      {/* Timestamp + language badge */}
+      {/* Timestamp */}
       <div className="flex items-center gap-1.5" style={{
         marginTop: 3,
         paddingLeft: isUser ? 0 : 4,
         paddingRight: isUser ? 4 : 0,
       }}>
-        {msg.language && (
-          <span style={{
-            fontSize: 8, fontWeight: 700, letterSpacing: "0.06em",
-            color: msg.language === "de" ? "rgba(245,158,11,0.35)" : "rgba(6,182,212,0.35)",
-            textTransform: "uppercase", transition: "color 0.5s",
-          }}>{msg.language === "de" ? "DE" : "EN"}</span>
-        )}
         <span style={{ fontSize: 9, color: "rgba(255,255,255,0.12)" }}>
           {timeAgo(msg._ts)}
         </span>
