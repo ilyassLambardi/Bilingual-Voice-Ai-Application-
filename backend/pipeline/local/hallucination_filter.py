@@ -55,7 +55,7 @@ def filter_hallucination(text: str, no_speech_prob: Optional[float]=None,
     # Sentence repetition
     sents = [s.strip().strip('.,!?;:').lower() for s in re.split(r'[.!?]+', raw) if s.strip()]
     if len(sents) >= 2 and Counter(sents).most_common(1)[0][1]/len(sents) > 0.6: return ""
-    # Dominant word
+    # Dominant wordg
     if len(words) >= 3 and Counter(words).most_common(1)[0][1]/len(words) > 0.6: return ""
     # Numeric noise
     digs = sum(c.isdigit() for c in cleaned); alps = sum(c.isalpha() for c in cleaned)
