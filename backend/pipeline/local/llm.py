@@ -18,8 +18,8 @@ def clean_response(text: str) -> str:
     return text
 
 def build_context_hint(lang: str, user_text: str) -> str:
-    hint = ("[SPRACHE: DEUTSCH. Antworte NUR auf Deutsch. KEIN Englisch.]\n" if lang == "de"
-            else "[LANGUAGE: ENGLISH ONLY. You MUST respond entirely in English. Do NOT use ANY German. Even if previous messages were in German, respond ONLY in English now.]\n")
+    hint = ("[SPRACHE: DEUTSCH. Antworte NUR auf Deutsch. KEIN Englisch. KURZ antworten: 1-2 Sätze.]\n" if lang == "de"
+            else "[LANGUAGE: ENGLISH ONLY. You MUST respond entirely in English. Do NOT use ANY German. KEEP IT SHORT: 1-2 sentences max.]\n")
     if any(t in user_text.lower() for t in ("what does","was bedeutet","was hei\u00dft","meaning of","bedeutung von")):
         hint += ("[TEACHER MODE] Explain the word naturally, give 2-3 examples in the other language, "
                  "brief cultural context. Keep it conversational.")

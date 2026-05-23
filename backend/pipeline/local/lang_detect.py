@@ -7,6 +7,16 @@ short English phrases as German.
 import re
 
 _DE_CHARS = set("äöüß")
+
+# English phrases that explicitly request switching to German
+_SWITCH_TO_DE = [
+    "speak german", "speak only german", "switch to german",
+    "let's speak german", "let us speak german", "talk in german",
+    "respond in german", "answer in german", "auf deutsch",
+    "in german please", "german please", "lass uns deutsch",
+    "sprechen wir deutsch", "nur deutsch",
+]
+
 _UNAMBIGUOUS_DE = {
     "ich","du","er","wir","ihr","mein","dein","sein","das","der","ein","eine",
     "ist","sind","habe","haben","wird","kann","muss","soll","darf",
@@ -24,6 +34,9 @@ def detect_lang_from_text(text: str) -> str:
     if not text.strip():
         return "en"
     lower = text.strip().lower()
+    # Check for explicit switch-to-German phrases first
+    if any(trigger in lower for trigger in _SWITCH_TO_DE):
+        return "de"
     words = {re.sub(r"[^\w]", "", w) for w in lower.split()} - {""}
     if any(c in lower for c in _DE_CHARS) or words & _UNAMBIGUOUS_DE:
         return "de"

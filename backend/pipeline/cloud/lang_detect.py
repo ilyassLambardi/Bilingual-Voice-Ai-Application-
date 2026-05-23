@@ -19,6 +19,15 @@ langid.set_languages(["en", "de"])
 # German special characters — always a definitive German signal
 _DE_CHARS = set("äöüß")
 
+# English phrases that explicitly request switching to German
+_SWITCH_TO_DE = [
+    "speak german", "speak only german", "switch to german",
+    "let's speak german", "let us speak german", "talk in german",
+    "respond in german", "answer in german", "auf deutsch",
+    "in german please", "german please", "lass uns deutsch",
+    "sprechen wir deutsch", "nur deutsch",
+]
+
 # Unambiguous German words for short-text validation.
 # Deliberately excludes EN/DE homographs: will, die, war, hat, in, an,
 # bin, tag, halt, gut, alt, so, also, was (English "was").
@@ -57,6 +66,10 @@ def detect_lang_from_text(text: str) -> str:
     stripped = text.strip()
     if not stripped:
         return "en"
+
+    # Check for explicit switch-to-German phrases first
+    if any(trigger in stripped.lower() for trigger in _SWITCH_TO_DE):
+        return "de"
 
     # Primary: langid statistical classifier
     lang, _confidence = langid.classify(stripped)
