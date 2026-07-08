@@ -1,6 +1,6 @@
 # Bilingual Speech-to-Speech Conversational AI
 
-> **Graduation Thesis Project** — Real-time bilingual (English/German) voice AI with streaming pipeline, language-aware persona, and interactive 3D visualization.
+> Real-time bilingual (English/German) voice AI with streaming pipeline, language-aware persona, and interactive 3D visualization.
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev)
@@ -286,11 +286,10 @@ Long-term memory uses SQLite with semantic similarity search, allowing the AI to
 
 ## License
 
-This project is part of a graduation thesis. See [LICENSE](LICENSE) for details.
+This project. See [LICENSE](LICENSE) for details.
 
 ---
 
 ## Author
-
-**Ilyass** — Graduation Thesis Project  
+ILYASS LAMBARDI
 Bilingual Speech-to-Speech Conversational AI System
